@@ -5,7 +5,7 @@ DISTFILES=*.[ch] Makefile README COPYING
 SRCS=main.c omfs.c crc.c
 OBJS=$(SRCS:.c=.o)
 
-CFLAGS+=-g -Wall -D_FILE_OFFSET_BITS=64 -DFUSE_USE_VERSION=25 `pkg-config --cflags fuse`
+CFLAGS+=-g -Wall -D_FILE_OFFSET_BITS=64 -DFUSE_USE_VERSION=26 `pkg-config --cflags fuse`
 
 all: omfs
 

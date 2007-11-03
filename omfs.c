@@ -8,8 +8,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <errno.h>
 #include "omfs.h"
 #include "crc.h"
+
+static void _omfs_make_empty_table(u8 *buf, int offset)
+{
+    struct omfs_extent *oe = (struct omfs_extent *) &buf[offset];
+    oe->next = ~0ULL;
+    oe->extent_count = swap_be32(1),
+	oe->fill = swap_be32(0x22),
+	oe->entry.blocks = ~0ULL;
+}
+
 
 static void _omfs_swap_buffer(void *buf, int count)
 {
@@ -160,6 +171,44 @@ int omfs_write_inode(omfs_info_t *info, omfs_inode_t *inode)
 			swap_be64(inode->head.self), (u8*) inode, size);
 }
 
+omfs_inode_t *omfs_new_inode(omfs_info_t *info, u64 block, 
+        char *name, char type)
+{
+	u8 *buf;
+    omfs_inode_t *inode;
+
+    inode = omfs_get_inode(info, block);
+	if (!inode)
+		return NULL;
+
+    inode->head.self = swap_be64(block); 
+    inode->head.version = 1;
+    inode->head.magic = OMFS_IMAGIC;
+    inode->head.body_size = swap_be32(
+        swap_be32(info->super->sys_blocksize) - sizeof(struct omfs_header));
+    inode->head.type = OMFS_INODE_NORMAL;
+    inode->type = type;
+    inode->parent = ~0ULL;
+    inode->sibling = ~0ULL;
+    inode->one_goes_here = swap_be32(1);
+    strncpy(inode->name, name, OMFS_NAMELEN);
+    inode->name[OMFS_NAMELEN-1] = 0;
+	inode->size = 0;
+
+    buf = (u8*) inode;
+    if (type == OMFS_FILE)
+    {
+        _omfs_make_empty_table(buf, OMFS_EXTENT_START);
+    }
+    else
+    {
+        memset(&buf[OMFS_DIR_START], 0xff, 
+            swap_be32(info->super->sys_blocksize) - OMFS_DIR_START);
+    }
+
+	return inode;
+}
+
 omfs_inode_t *omfs_get_inode(omfs_info_t *info, u64 block)
 {
 	u8 *buf;
@@ -183,11 +232,13 @@ int omfs_write_bitmap(omfs_info_t *info, u8* bitmap)
 	size = (swap_be64(info->super->num_blocks) + 7) / 8;
 	fseeko(info->dev, bitmap_blk * swap_be32(info->super->blocksize), 
 			SEEK_SET);
+    _omfs_swap_buffer(bitmap, count);
 	count = fwrite(bitmap, 1, size, info->dev);
 	if (size != count)
 		return -1;
 	return 0;
 }
+
 
 u8 *omfs_get_bitmap(omfs_info_t *info)
 {
@@ -203,7 +254,9 @@ u8 *omfs_get_bitmap(omfs_info_t *info)
 		return NULL;
 
 	fseeko(info->dev, bitmap_blk * swap_be32(info->super->blocksize), SEEK_SET);
+
 	fread(buf, 1, size, info->dev);
+    _omfs_swap_buffer(buf, size);
 	return buf;
 }
 
@@ -216,6 +269,37 @@ int omfs_compute_hash(omfs_info_t *info, char *filename)
 		hash ^= tolower(filename[i]) << (i % 24);
 	
 	return hash % m;
+}
+
+/*
+ * As I believe is the case with Karma firmware, for now this just 
+ * allocates an entire cluster at a time.  It assumes cluster size
+ * is 8 blocks (true for Karma) so we just look for an empty byte.  
+ * If the assumptions don't hold, we may underallocate or return 
+ * full disk early but won't hose the disk.
+ */
+int omfs_allocate_block(omfs_info_t *info, u64 *return_block)
+{
+    size_t bsize;
+    int ret = 0;
+    int i;
+
+    u8 *bitmap = omfs_get_bitmap(info);
+    if (!bitmap)
+        return -ENOMEM;
+
+    bsize = (swap_be64(info->super->num_blocks) + 7) / 8;
+    for (i = 0; i < bsize && bitmap[i]; i++) ;
+    if (i == bsize) {
+        ret = -ENOSPC;
+        goto out;
+    }
+    bitmap[i] = 0xff;
+    omfs_write_bitmap(info, bitmap);
+    *return_block = i * 8;
+out:
+    free(bitmap);
+    return ret;
 }
 
 void omfs_sync(omfs_info_t *info)

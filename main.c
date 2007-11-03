@@ -37,8 +37,37 @@ static omfs_inode_t *omfs_find_by_name(omfs_inode_t *parent, char *name)
         if (strcmp(inode->name,name) == 0)
             break;
         ino = swap_be64(inode->sibling);
+        omfs_release_inode(inode);
     }
+    if (ino == ~0)
+        return NULL;
     return inode;
+}
+
+/*
+ * Split path into directory and filename portions.
+ * Caller must free the returned pointer.
+ */
+static char *split_path(const char *path, char **basename, char **dirname)
+{
+    char *p, *dir, *file;
+
+    p = strdup(path);
+    if (!p) 
+        return NULL;
+
+    dir = p;
+    file = strrchr(p, '/');
+
+    if (file) {
+        *file++ = 0;
+    } else {
+        file = p;
+        dir = file + strlen(file);
+    }
+    *basename = dir;
+    *dirname = file;
+    return p;
 }
 
 static omfs_inode_t *omfs_lookup(const char *path)
@@ -47,7 +76,10 @@ static omfs_inode_t *omfs_lookup(const char *path)
     omfs_inode_t *inode = NULL;
 
     // starting at the root, find the inode of path
-    p = strdup(path + 1);
+    if (path[0] == '/')
+        path++;
+
+    p = strdup(path);
     if (!p) 
         return NULL;
 
@@ -66,10 +98,14 @@ static omfs_inode_t *omfs_lookup(const char *path)
 
 static int omfs_getattr(const char *path, struct stat *stbuf)
 {
+    u64 ctime;
+    struct fuse_context *ctx;
+
     omfs_inode_t *inode = omfs_lookup(path);
     if (!inode)
         return -ENOENT;
 
+    ctx = fuse_get_context();
     memset(stbuf, 0, sizeof (struct stat));
     if (inode->type == OMFS_DIR) {
         stbuf->st_mode = S_IFDIR | 0755;
@@ -79,6 +115,12 @@ static int omfs_getattr(const char *path, struct stat *stbuf)
         stbuf->st_nlink = 1;
         stbuf->st_size = swap_be64(inode->size);
     }
+   
+    ctime = swap_be64(inode->ctime) / 1000L; 
+    stbuf->st_ctime = stbuf->st_mtime = ctime;
+    stbuf->st_uid = ctx->uid;
+    stbuf->st_gid = ctx->gid;
+   
     return 0;
 }
 
@@ -128,6 +170,81 @@ static int omfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         }
     }
     omfs_release_inode(dir);
+    return 0;
+}
+
+static int _add_inode(const char *path, char type)
+{
+    char *dir, *file, *tmp;
+    u64 block, *table;
+    omfs_inode_t *parent, *new_inode;
+    int hash;
+    int err = 0;
+
+    tmp = split_path(path, &dir, &file);
+    if (!tmp)
+        return -ENOMEM;
+
+    parent = omfs_lookup(dir);
+    if (!parent) {
+        err = -ENOENT;
+        goto out2;
+    }
+
+    err = omfs_allocate_block(&omfs_info, &block);
+    if (err)
+        goto out1;
+
+    new_inode = omfs_new_inode(&omfs_info, block, file, type);
+    if (!new_inode) {
+        err = -ENOMEM;
+        goto out1;
+    }
+
+    table = (u64*) ((u8*) parent + OMFS_DIR_START);
+    hash = omfs_compute_hash(&omfs_info, file);
+
+    new_inode->parent = parent->head.self;
+    new_inode->sibling = table[hash];
+    table[hash] = swap_be64(block);
+    
+    omfs_write_inode(&omfs_info, new_inode);
+    omfs_write_inode(&omfs_info, parent);
+    
+    omfs_release_inode(new_inode);
+out1:
+    omfs_release_inode(parent);
+out2:
+    free(tmp);
+    return err;
+}
+
+static int omfs_mknod(const char *path, mode_t mode, dev_t dev)
+{
+    return _add_inode(path, OMFS_FILE);
+}
+
+static int omfs_mkdir(const char *path, mode_t mode)
+{
+    return _add_inode(path, OMFS_DIR);
+}
+
+
+static int omfs_rename(const char *old, const char *new)
+{
+    omfs_inode_t *inode = omfs_lookup(old);
+    char *tmp, *dir, *file;
+
+    if (!inode)
+        return -ENOENT;
+
+    tmp = split_path(new, &dir, &file);
+
+    // FIXME - add cross dir rename
+    strncpy(inode->name, file, OMFS_NAMELEN);
+    inode->name[OMFS_NAMELEN-1] = 0;
+    omfs_write_inode(&omfs_info, inode);
+    omfs_release_inode(inode);
     return 0;
 }
 
@@ -210,12 +327,100 @@ static int omfs_read (const char *path, char *buf, size_t size, off_t offset,
     return copied;
 }
 
+static int omfs_utimens(const char *path, const struct timespec tv[2])
+{
+    omfs_inode_t *inode = omfs_lookup(path);
+
+    if (!inode)
+        return -ENOENT;
+
+    u64 ctime = tv[1].tv_sec * 1000LL + tv[1].tv_nsec/1000;
+
+    inode->ctime = swap_be64(ctime);
+    omfs_write_inode(&omfs_info, inode);
+    omfs_release_inode(inode);
+    return 0;
+}
+
+#if 0
+static int truncate(const char *path, off_t new_size)
+{
+    u8 *buf;
+    u64 old_size;
+    omfs_inode_t *inode = omfs_lookup(path);
+
+    if (!inode)
+        return -ENOENT;
+
+    old_size = swap_be64(inode->size);
+    buf = (u8*) inode;
+
+    if (old_size < new_size)
+    {
+        grow_file(inode, new_size);
+    }
+    else
+    {
+        inode->size = swap_be64(new_size);
+    }
+}
+
+static int shrink_file(struct inode *inode, u64 size)
+{
+    u64 so_far = 0;
+    u8 *bitmap;
+    oe = (struct omfs_extent *) &buf[OMFS_EXTENT_START];
+
+    inode->size = swap_be64(size);
+    bitmap = omfs_get_bitmap(&omfs_info);
+
+    if (!bitmap)
+        return -ENOMEM;
+
+    for (;;)
+    {
+        extent_count = swap_be32(oe->extent_count);
+        last = next;
+        next = swap_be64(oe->next);
+        entry = &oe->entry;
+
+        for (; extent_count > 1; extent_count--)
+        {
+			u64 start = swap_be64(entry->cluster);
+
+			for (i=0; i<swap_be64(entry->blocks); i++)
+            {
+                if (so_far >= size) {
+				    clear_bit(bitmap, start + i);
+                    oe->extent_count--;
+                so_far += swap_be32(omfs_info.super->blocksize);
+            }
+			entry++;
+        }
+
+        if (next == ~0 && new_size <= size_so_far)
+            break;
+
+        if (next == ~0) 
+        {
+            growing = 1;
+        }
+    }
+    omfs_write_bitmap(&info, bitmap); 
+    free(bitmap);
+}
+#endif
+
 
 static struct fuse_operations omfs_op = {
     .getattr    = omfs_getattr,
     .readdir    = omfs_readdir,
     .open       = omfs_open,
     .read       = omfs_read,
+    .rename     = omfs_rename,
+    .mknod      = omfs_mknod,
+    .mkdir      = omfs_mkdir,
+    .utimens    = omfs_utimens,
 };
 
 int main(int argc, char *argv[])
@@ -245,7 +450,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    FILE *fp = fopen(device, "rb");
+    FILE *fp = fopen(device, "rb+");
     if (!fp)
     {
         perror("fuse_omfs");
@@ -267,5 +472,5 @@ int main(int argc, char *argv[])
     omfs_info.super = &super;
     omfs_info.root = &root;
 
-    return fuse_main(fuse_argc, fuse_argv, &omfs_op);
+    return fuse_main(fuse_argc, fuse_argv, &omfs_op, NULL);
 }

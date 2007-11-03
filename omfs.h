@@ -109,5 +109,8 @@ int omfs_write_bitmap(omfs_info_t *info, u8 *bitmap);
 u8 *omfs_get_bitmap(omfs_info_t *info);
 void omfs_sync(omfs_info_t *info);
 int omfs_compute_hash(omfs_info_t *info, char *filename);
+int omfs_allocate_block(omfs_info_t *info, u64 *return_block);
+omfs_inode_t *omfs_new_inode(omfs_info_t *info, u64 block, char *name, 
+    char type);
 
 #endif
