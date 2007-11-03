@@ -1,0 +1,20 @@
+README for fuseomfs 
+Bob Copeland <me@bobcopeland.com>
+
+This is a reference implementation of the Optimized MPEG file system
+using FUSE (File System in Userspace).  This is mostly intended as an
+experimental tool for testing and correctness rather than as an optimized,
+full-fledged implementation for every day use (use my native kernel driver
+for that).
+
+To use:
+    $ omfs -a <device-file> <mount-point>   # mount a device
+    $ fusermount -u <mount-point>           # unmount
+
+To use with ReplayTV 4xxx-5xxx, build like this:
+    $ CFLAGS=-DRTV_HACK make
+
+(At some point I'll make that mount-time configurable.)
+
+At present the FS is read-only.
+
