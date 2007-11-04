@@ -259,7 +259,7 @@ static int omfs_open (const char *path, struct fuse_file_info *fi)
     return 0;
 }
 
-static int find_block(struct omfs_extent_entry **entry, u64 block, int count)
+static u64 find_block(struct omfs_extent_entry **entry, u64 block, int count)
 {
     u64 searched = 0;
     for (; count > 1; count--)
