@@ -338,12 +338,13 @@ static int omfs_read (const char *path, char *buf, size_t size, off_t offset,
         count = min(size, blocksize-start);
         u8 *block = omfs_get_data_n(requested, fi);
         if (!block)
-            return -EIO;
+            goto out;
     
         memcpy(&buf[copied], block, count);
         free(block);
         start = 0;
     }
+out:
     return copied;
 }
 
@@ -362,31 +363,8 @@ static int omfs_utimens(const char *path, const struct timespec tv[2])
     return 0;
 }
 
-#if 0
-static int truncate(const char *path, off_t new_size)
-{
-    u8 *buf;
-    u64 old_size;
-    omfs_inode_t *inode = omfs_lookup(path);
-
-    if (!inode)
-        return -ENOENT;
-
-    old_size = swap_be64(inode->size);
-    buf = (u8*) inode;
-
-    if (old_size < new_size)
-    {
-        grow_file(inode, new_size);
-    }
-    else
-    {
-        inode->size = swap_be64(new_size);
-    }
-}
-
 // purge any empty rows and rewrite terminator
-static void update_extent_table(omfs_extent *oe)
+static void update_extent_table(struct omfs_extent *oe)
 {
     struct omfs_extent_entry *entry;
     int count = 0, total_extents = 1, remaining;
@@ -411,21 +389,73 @@ static void update_extent_table(omfs_extent *oe)
     oe->extent_count = swap_be32(total_extents);
 }
 
-static int shrink_file(struct inode *inode, u64 size)
+static int shrink_file(struct omfs_inode *inode, u64 size)
 {
     struct omfs_extent *oe;
-    struct omfs_extent_entry *entry;
+    struct omfs_extent_entry *entry, *term;
     int blocksize = swap_be32(omfs_info.super->blocksize);
-    u64 requested = offset / blocksize;
-    int start = offset % blocksize;
-    int count;
-    int copied = 0;
+    u64 requested = (size + blocksize-1)/ blocksize;
+    u64 block;
 
-    if (!omfs_find_location(requested, inode, &oe, &entry))
+    block = omfs_find_location(requested, inode, &oe, &entry);
+
+    // already truncated...
+    if (!block)
+        return -EINVAL;
+
+    inode->size = swap_be64(size);
+
+    // entry points to the last valid extent, with num_blocks-(block-cluster)
+    // blocks to free.  Then we free everything else and rebuild the current
+    // terminator. 
+    
+    u64 to_delete = swap_be64(entry->blocks);
+    entry->blocks = swap_be64(block - swap_be64(entry->cluster));
+    to_delete -= swap_be64(entry->blocks);
+    // clear_bits(block, to_delete);
+    entry++;
+
+    for (;;) 
+    {
+        u64 next = swap_be64(oe->next);
+        term = &oe->entry + swap_be32(oe->extent_count) - 1;
+        while (entry != term) {
+            //clear_bits(swap_be64(entry->cluster), swap_be64(entry->count));
+            entry->blocks = 0;
+            entry++;
+        }
+        
+        // clear inode allocation bits here if needed...
+        update_extent_table(oe);
+        omfs_write_inode(&omfs_info, inode);
+
+        if (next == ~0)
+            break;
+
+        inode = omfs_get_inode(&omfs_info, next);
+        oe = (struct omfs_extent *) ((u8*) inode + OMFS_EXTENT_CONT);
+    }
+    return 0;
+}
+
+static int omfs_truncate(const char *path, off_t new_size)
+{
+    u8 *buf;
+    u64 old_size;
+    omfs_inode_t *inode = omfs_lookup(path);
+
+    if (!inode)
         return -ENOENT;
 
+    old_size = swap_be64(inode->size);
+    buf = (u8*) inode;
+
+    if (new_size < old_size)
+        return shrink_file(inode, new_size);
+
+    return -EIO;
 }
-#endif
+
 
 
 static struct fuse_operations omfs_op = {
@@ -437,6 +467,7 @@ static struct fuse_operations omfs_op = {
     .mknod      = omfs_mknod,
     .mkdir      = omfs_mkdir,
     .utimens    = omfs_utimens,
+    .truncate   = omfs_truncate,
 };
 
 int main(int argc, char *argv[])
