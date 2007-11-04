@@ -259,27 +259,31 @@ static int omfs_open (const char *path, struct fuse_file_info *fi)
     return 0;
 }
 
-static u64 find_block(struct omfs_extent_entry *entry, u64 block, int count)
+static int find_block(struct omfs_extent_entry **entry, u64 block, int count)
 {
     u64 searched = 0;
     for (; count > 1; count--)
     {
-        u64 numblocks = swap_be64(entry->blocks);
+        u64 numblocks = swap_be64((*entry)->blocks);
         if (block >= searched && block < searched + numblocks) 
-            return swap_be64(entry->cluster) + block - searched;
+            return swap_be64((*entry)->cluster) + block - searched;
         
         searched += numblocks;
-        entry++;
+        (*entry)++;
     }
     return 0;
 }
 
-static u8 *omfs_get_data_n(u64 requested, struct fuse_file_info *fi)
+/*
+ *  Given an offset into a file, find the extent table and entry 
+ *  containing the location.  Return the fs block of the location.
+ */
+static u64 omfs_find_location(u64 requested, omfs_inode_t *inode, 
+            struct omfs_extent **ret_oe, struct omfs_extent_entry **ret_entry)
 {
-    omfs_inode_t *inode = get_handle(fi);
-
     struct omfs_extent_entry *entry;
     struct omfs_extent *oe;
+    u64 found_block = 0;
 
     oe = (struct omfs_extent *) ((u8*) inode + OMFS_EXTENT_START);
 
@@ -289,11 +293,9 @@ static u8 *omfs_get_data_n(u64 requested, struct fuse_file_info *fi)
         u64 next = swap_be64(oe->next);
         entry = &oe->entry;
 
-        u64 block = find_block(entry, requested, extent_count);
-        if (block == 0)
-            return NULL;
-
-        return omfs_get_block(omfs_info.dev, omfs_info.super, block);
+        found_block = find_block(&entry, requested, extent_count);
+        if (found_block > 0)
+            goto out;
 
         if (next == ~0)
             break;
@@ -301,6 +303,24 @@ static u8 *omfs_get_data_n(u64 requested, struct fuse_file_info *fi)
         inode = omfs_get_inode(&omfs_info, next);
         oe = (struct omfs_extent *) ((u8*) inode + OMFS_EXTENT_CONT);
     }
+out:
+    *ret_entry = entry;
+    *ret_oe = oe;
+    return found_block;
+}
+
+static u8 *omfs_get_data_n(u64 requested, struct fuse_file_info *fi)
+{
+    struct omfs_extent *oe;
+    struct omfs_extent_entry *entry;
+
+    omfs_inode_t *inode = get_handle(fi);
+
+    u64 block = omfs_find_location(requested, inode, &oe, &entry);
+
+    if (block > 0)
+        return omfs_get_block(omfs_info.dev, omfs_info.super, block);
+
     return NULL;
 }
 
@@ -365,49 +385,45 @@ static int truncate(const char *path, off_t new_size)
     }
 }
 
-static int shrink_file(struct inode *inode, u64 size)
+// purge any empty rows and rewrite terminator
+static void update_extent_table(omfs_extent *oe)
 {
-    u64 so_far = 0;
-    u8 *bitmap;
-    oe = (struct omfs_extent *) &buf[OMFS_EXTENT_START];
+    struct omfs_extent_entry *entry;
+    int count = 0, total_extents = 1, remaining;
 
-    inode->size = swap_be64(size);
-    bitmap = omfs_get_bitmap(&omfs_info);
+    entry = &oe->entry;
+    remaining = swap_be32(oe->extent_count);
 
-    if (!bitmap)
-        return -ENOMEM;
-
-    for (;;)
+    for (; remaining > 1; remaining--)
     {
-        extent_count = swap_be32(oe->extent_count);
-        last = next;
-        next = swap_be64(oe->next);
-        entry = &oe->entry;
-
-        for (; extent_count > 1; extent_count--)
-        {
-			u64 start = swap_be64(entry->cluster);
-
-			for (i=0; i<swap_be64(entry->blocks); i++)
-            {
-                if (so_far >= size) {
-				    clear_bit(bitmap, start + i);
-                    oe->extent_count--;
-                so_far += swap_be32(omfs_info.super->blocksize);
-            }
-			entry++;
-        }
-
-        if (next == ~0 && new_size <= size_so_far)
-            break;
-
-        if (next == ~0) 
-        {
-            growing = 1;
+        u64 num_blocks = swap_be64(entry->blocks);
+        count += num_blocks;
+        if (num_blocks == 0)
+            memcpy(entry, entry + 1, 
+                sizeof(struct omfs_extent_entry) * remaining);
+        else {
+            total_extents++;
+            entry++;
         }
     }
-    omfs_write_bitmap(&info, bitmap); 
-    free(bitmap);
+    // entry points at terminator
+    entry->blocks = swap_be64(~count);
+    oe->extent_count = swap_be32(total_extents);
+}
+
+static int shrink_file(struct inode *inode, u64 size)
+{
+    struct omfs_extent *oe;
+    struct omfs_extent_entry *entry;
+    int blocksize = swap_be32(omfs_info.super->blocksize);
+    u64 requested = offset / blocksize;
+    int start = offset % blocksize;
+    int count;
+    int copied = 0;
+
+    if (!omfs_find_location(requested, inode, &oe, &entry))
+        return -ENOENT;
+
 }
 #endif
 
