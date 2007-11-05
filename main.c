@@ -111,7 +111,7 @@ static int omfs_getattr(const char *path, struct stat *stbuf)
         stbuf->st_mode = S_IFDIR | 0755;
         stbuf->st_nlink = 2;
     } else {
-        stbuf->st_mode = S_IFREG | 0444;
+        stbuf->st_mode = S_IFREG | 0644;
         stbuf->st_nlink = 1;
         stbuf->st_size = swap_be64(inode->size);
     }
@@ -438,6 +438,89 @@ static int shrink_file(struct omfs_inode *inode, u64 size)
     return 0;
 }
 
+static int grow_extent(struct omfs_inode *inode, struct omfs_extent *oe,
+                       struct omfs_extent_entry *entry, int *num_added)
+{
+    struct omfs_extent_entry *term;
+    int ret=0, max_count;
+    u64 new_block;
+    term = &oe->entry + swap_be32(oe->extent_count) - 1;
+
+    if (entry != term)
+    {
+        printf ("Trying to grow current extent by one block.\n");
+        // try extending current extent
+        new_block = swap_be64(entry->cluster) + swap_be64(entry->blocks);
+
+        if (omfs_allocate_one_block(&omfs_info, new_block))
+        {
+            *num_added = 1;
+            entry->blocks = swap_be64(swap_be64(entry->blocks) + 1);
+            term->blocks = ~(swap_be64(swap_be64(~term->blocks) + 1));
+            goto out;
+        }
+    }
+    max_count = swap_be32(omfs_info.super->sys_blocksize) - 
+        OMFS_EXTENT_START - sizeof(struct omfs_extent) /
+        sizeof(struct omfs_extent_entry) + 1; 
+
+    if (swap_be32(oe->extent_count) > max_count-1) {
+        // no more room, add to next ptr...
+        ret = -EIO;
+        goto out_fail;
+    }
+    ret = omfs_allocate_block(&omfs_info, &new_block);
+    if (ret)
+        goto out_fail;
+
+    oe->extent_count = swap_be32(1 + swap_be32(oe->extent_count));
+
+    entry = term;
+    term++;
+    memcpy(term, entry, sizeof(struct omfs_extent_entry));
+
+    *num_added = swap_be32(omfs_info.root->clustersize);
+    entry->cluster = swap_be64(new_block);
+    entry->blocks = swap_be64(*num_added);
+
+    term->blocks = ~(swap_be64(swap_be64(~term->blocks) + *num_added));
+    
+    omfs_write_inode(&omfs_info, inode);
+out:
+out_fail:
+    return ret;
+}
+
+static int grow_file(struct omfs_inode *inode, u64 size)
+{
+    struct omfs_extent *oe;
+    struct omfs_extent_entry *entry;
+    int ret, i;
+    int num_added;
+
+    int blocksize = swap_be32(omfs_info.super->blocksize);
+    u64 cur_blks = (swap_be64(inode->size) + blocksize-1) / blocksize;
+    u64 requested = (size + blocksize-1) / blocksize;
+    
+    omfs_find_location(requested, inode, &oe, &entry);
+
+    // entry points to terminator after last valid extent
+    if (entry != &oe->entry)
+        entry--;
+
+    for (i=0; i < requested - cur_blks; i += num_added)
+    {
+        ret = grow_extent(inode, oe, entry, &num_added);
+        if (ret)
+            return ret;
+    }
+    
+    inode->size = swap_be64(size);
+    omfs_write_inode(&omfs_info, inode);
+
+    return 0;
+}
+
 static int omfs_truncate(const char *path, off_t new_size)
 {
     u8 *buf;
@@ -453,7 +536,7 @@ static int omfs_truncate(const char *path, off_t new_size)
     if (new_size < old_size)
         return shrink_file(inode, new_size);
 
-    return -EIO;
+    return grow_file(inode, new_size);
 }
 
 

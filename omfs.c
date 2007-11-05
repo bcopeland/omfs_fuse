@@ -10,6 +10,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include "omfs.h"
+#include "bits.h"
 #include "crc.h"
 
 static void _omfs_make_empty_table(u8 *buf, int offset)
@@ -269,6 +270,23 @@ int omfs_compute_hash(omfs_info_t *info, char *filename)
 		hash ^= tolower(filename[i]) << (i % 24);
 	
 	return hash % m;
+}
+
+int omfs_allocate_one_block(omfs_info_t *info, u64 block)
+{
+    int ok = 0;
+    u8 *bitmap = omfs_get_bitmap(info);
+    if (!bitmap)
+        return -ENOMEM;
+
+    if (!test_bit(bitmap, block))
+    {
+        set_bit(bitmap, block);
+        omfs_write_bitmap(info, bitmap);
+        ok = 1;
+    }
+    free(bitmap);
+    return ok;
 }
 
 /*

@@ -112,5 +112,6 @@ int omfs_compute_hash(omfs_info_t *info, char *filename);
 int omfs_allocate_block(omfs_info_t *info, u64 *return_block);
 omfs_inode_t *omfs_new_inode(omfs_info_t *info, u64 block, char *name, 
     char type);
+int omfs_allocate_one_block(omfs_info_t *info, u64 block);
 
 #endif
