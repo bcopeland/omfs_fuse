@@ -10,7 +10,6 @@
 #include <ctype.h>
 #include <errno.h>
 #include "omfs.h"
-#include "bits.h"
 #include "crc.h"
 
 static void _omfs_make_empty_table(u8 *buf, int offset)
@@ -270,54 +269,6 @@ int omfs_compute_hash(omfs_info_t *info, char *filename)
 		hash ^= tolower(filename[i]) << (i % 24);
 	
 	return hash % m;
-}
-
-int omfs_allocate_one_block(omfs_info_t *info, u64 block)
-{
-    int ok = 0;
-    u8 *bitmap = omfs_get_bitmap(info);
-    if (!bitmap)
-        return -ENOMEM;
-
-    if (!test_bit(bitmap, block))
-    {
-        set_bit(bitmap, block);
-        omfs_write_bitmap(info, bitmap);
-        ok = 1;
-    }
-    free(bitmap);
-    return ok;
-}
-
-/*
- * As I believe is the case with Karma firmware, for now this just 
- * allocates an entire cluster at a time.  It assumes cluster size
- * is 8 blocks (true for Karma) so we just look for an empty byte.  
- * If the assumptions don't hold, we may underallocate or return 
- * full disk early but won't hose the disk.
- */
-int omfs_allocate_block(omfs_info_t *info, u64 *return_block)
-{
-    size_t bsize;
-    int ret = 0;
-    int i;
-
-    u8 *bitmap = omfs_get_bitmap(info);
-    if (!bitmap)
-        return -ENOMEM;
-
-    bsize = (swap_be64(info->super->num_blocks) + 7) / 8;
-    for (i = 0; i < bsize && bitmap[i]; i++) ;
-    if (i == bsize) {
-        ret = -ENOSPC;
-        goto out;
-    }
-    bitmap[i] = 0xff;
-    omfs_write_bitmap(info, bitmap);
-    *return_block = i * 8;
-out:
-    free(bitmap);
-    return ret;
 }
 
 void omfs_sync(omfs_info_t *info)

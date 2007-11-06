@@ -120,7 +120,8 @@ static int omfs_getattr(const char *path, struct stat *stbuf)
     stbuf->st_ctime = stbuf->st_mtime = ctime;
     stbuf->st_uid = ctx->uid;
     stbuf->st_gid = ctx->gid;
-   
+
+    omfs_release_inode(inode);   
     return 0;
 }
 
@@ -191,7 +192,8 @@ static int _add_inode(const char *path, char type)
         goto out2;
     }
 
-    err = omfs_allocate_block(&omfs_info, &block);
+    err = omfs_allocate_block(&omfs_info, swap_be32(omfs_info.super->mirrors), 
+        &block);
     if (err)
         goto out1;
 
@@ -278,6 +280,7 @@ static u64 find_block(struct omfs_extent_entry **entry, u64 block, int count)
  *  Given an offset into a file, find the extent table and entry 
  *  containing the location.  Return the fs block of the location.
  */
+// FIXME: return the inode so it can be freed
 static u64 omfs_find_location(u64 requested, omfs_inode_t *inode, 
             struct omfs_extent **ret_oe, struct omfs_extent_entry **ret_entry)
 {
@@ -435,6 +438,7 @@ static int shrink_file(struct omfs_inode *inode, u64 size)
         inode = omfs_get_inode(&omfs_info, next);
         oe = (struct omfs_extent *) ((u8*) inode + OMFS_EXTENT_CONT);
     }
+    // FIXME inode leak
     return 0;
 }
 
@@ -442,7 +446,7 @@ static int grow_extent(struct omfs_inode *inode, struct omfs_extent *oe,
                        struct omfs_extent_entry *entry, int *num_added)
 {
     struct omfs_extent_entry *term;
-    int ret=0, max_count;
+    int ret=0, max_count, to_alloc;
     u64 new_block;
     term = &oe->entry + swap_be32(oe->extent_count) - 1;
 
@@ -469,7 +473,11 @@ static int grow_extent(struct omfs_inode *inode, struct omfs_extent *oe,
         ret = -EIO;
         goto out_fail;
     }
-    ret = omfs_allocate_block(&omfs_info, &new_block);
+
+    to_alloc = swap_be32(omfs_info.root->clustersize);
+    ret = omfs_allocate_block(&omfs_info, 
+        swap_be32(omfs_info.root->clustersize), &new_block);
+
     if (ret)
         goto out_fail;
 
@@ -479,7 +487,7 @@ static int grow_extent(struct omfs_inode *inode, struct omfs_extent *oe,
     term++;
     memcpy(term, entry, sizeof(struct omfs_extent_entry));
 
-    *num_added = swap_be32(omfs_info.root->clustersize);
+    *num_added = to_alloc;
     entry->cluster = swap_be64(new_block);
     entry->blocks = swap_be64(*num_added);
 
