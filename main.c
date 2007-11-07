@@ -23,24 +23,59 @@ static inline omfs_inode_t *get_handle(struct fuse_file_info *fi)
     return (omfs_inode_t *) fi->fh;
 }
 
-static omfs_inode_t *omfs_find_by_name(omfs_inode_t *parent, char *name)
+/*
+ *  Caller must
+ */
+static omfs_inode_t *omfs_find_node_ptr(u64 parent_ino, char *name, 
+        omfs_inode_t **owner, u64 **entry)
 {
-    omfs_inode_t *inode = NULL;
-    u64 ino;
-    int hash = omfs_compute_hash(&omfs_info, name);
-    u64 *table = (u64*) ((u8*) parent + OMFS_DIR_START);
+    omfs_inode_t *last, *inode = omfs_get_inode(&omfs_info, parent_ino);
+    u64 *chain_ptr = (u64*) ((u8*) inode + OMFS_DIR_START);
 
-    ino = swap_be64(table[hash]);
-    while (ino != ~0)
+    last = inode;
+    if (!inode)
+        return NULL;
+
+    chain_ptr += omfs_compute_hash(&omfs_info, name);
+    while (*chain_ptr != ~0)
     {
-        inode = omfs_get_inode(&omfs_info, ino);
+        inode = omfs_get_inode(&omfs_info, swap_be64(*chain_ptr));
+        if (!inode) 
+            goto out;
+        
         if (strcmp(inode->name,name) == 0)
             break;
-        ino = swap_be64(inode->sibling);
-        omfs_release_inode(inode);
+
+        chain_ptr = &inode->sibling;
+        omfs_release_inode(last);
+        last = inode;
     }
-    if (ino == ~0)
-        return NULL;
+
+    if (*chain_ptr == ~0) {
+        inode = NULL;
+        goto out;
+    }
+
+    *owner = last;
+    *entry = chain_ptr;
+out:
+    if (!inode)
+        omfs_release_inode(last);
+    
+    return inode;
+}
+
+static omfs_inode_t *omfs_find_by_name(omfs_inode_t *parent, char *name)
+{
+    omfs_inode_t *inode, *owner;
+    u64 *entry;
+
+    inode = omfs_find_node_ptr(swap_be64(parent->head.self), name, 
+        &owner, &entry);
+
+    if (owner)
+        omfs_release_inode(owner);
+
     return inode;
 }
 
@@ -230,7 +265,6 @@ static int omfs_mkdir(const char *path, mode_t mode)
 {
     return _add_inode(path, OMFS_DIR);
 }
-
 
 static int omfs_rename(const char *old, const char *new)
 {
@@ -547,6 +581,30 @@ static int omfs_truncate(const char *path, off_t new_size)
     return grow_file(inode, new_size);
 }
 
+static int omfs_unlink (const char *path)
+{
+    omfs_inode_t *owner, *tmp;
+    omfs_inode_t *inode = omfs_lookup(path);
+    u64 *entry;
+
+    if (!inode)
+        return -ENOENT;
+
+    tmp = omfs_find_node_ptr(swap_be64(inode->parent), inode->name,
+            &owner, &entry);
+
+    if (!tmp)
+        return -ENOENT;
+
+    *entry = inode->sibling;
+    omfs_write_inode(&omfs_info, owner);
+    shrink_file(inode, 0);
+    omfs_release_inode(inode);
+    omfs_release_inode(tmp);
+    // free inode bits here..
+    return 0;
+}
+
 
 
 static struct fuse_operations omfs_op = {
@@ -559,6 +617,7 @@ static struct fuse_operations omfs_op = {
     .mkdir      = omfs_mkdir,
     .utimens    = omfs_utimens,
     .truncate   = omfs_truncate,
+    .unlink     = omfs_unlink,
 };
 
 int main(int argc, char *argv[])
