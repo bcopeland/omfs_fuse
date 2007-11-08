@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 #include <fuse.h>
 #include "omfs.h"
 
@@ -24,13 +25,15 @@ static inline omfs_inode_t *get_handle(struct fuse_file_info *fi)
 }
 
 /*
- *  Caller must
+ *  Caller must free returned pointer.
  */
 static omfs_inode_t *omfs_find_node_ptr(u64 parent_ino, char *name, 
         omfs_inode_t **owner, u64 **entry)
 {
     omfs_inode_t *last, *inode = omfs_get_inode(&omfs_info, parent_ino);
     u64 *chain_ptr = (u64*) ((u8*) inode + OMFS_DIR_START);
+
+    *owner = *entry = NULL;
 
     last = inode;
     if (!inode)
@@ -543,6 +546,8 @@ static int grow_file(struct omfs_inode *inode, u64 size)
     int blocksize = swap_be32(omfs_info.super->blocksize);
     u64 cur_blks = (swap_be64(inode->size) + blocksize-1) / blocksize;
     u64 requested = (size + blocksize-1) / blocksize;
+
+    assert (size > swap_be64(inode->size));
     
     omfs_find_location(requested, inode, &oe, &entry);
 
@@ -605,13 +610,59 @@ static int omfs_unlink (const char *path)
     return 0;
 }
 
+static int omfs_write(const char *path, char *buf, size_t size, 
+          off_t offset, struct fuse_file_info *fi)
+{
+    struct omfs_extent *oe;
+    struct omfs_extent_entry *entry;
+    int blocksize = swap_be32(omfs_info.super->blocksize);
+    u64 requested = offset / blocksize;
+    int start = offset % blocksize;
+    int count;
+    int copied = 0;
+    u8 *data;
 
+    omfs_inode_t *inode = get_handle(fi);
+    if (!inode)
+        return -ENOENT;
+
+    for (; copied < size ; copied += count, requested++)
+    {
+        count = min(size, blocksize-start);
+
+        u64 block = omfs_find_location(requested, inode, &oe, &entry);
+        if (!block) {
+            u64 new_size = size + offset;
+            if (new_size < swap_be64(inode->size))
+                goto out;
+
+            if (grow_file(inode, new_size))
+                goto out;
+
+            block = omfs_find_location(requested, inode, &oe, &entry);
+            if (!block)
+                goto out;
+        }
+
+        data = omfs_get_block(omfs_info.dev, omfs_info.super, block);
+        if (!data)
+            goto out;
+    
+        memcpy(&data[start], &buf[copied], count);
+        omfs_write_block(&omfs_info, block, data);
+        free(data);
+        start = 0;
+    }
+out:
+    return copied;
+}
 
 static struct fuse_operations omfs_op = {
     .getattr    = omfs_getattr,
     .readdir    = omfs_readdir,
     .open       = omfs_open,
     .read       = omfs_read,
+    .write      = omfs_write,
     .rename     = omfs_rename,
     .mknod      = omfs_mknod,
     .mkdir      = omfs_mkdir,

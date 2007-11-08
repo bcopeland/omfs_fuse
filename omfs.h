@@ -100,6 +100,7 @@ int omfs_read_root_block(FILE *dev, struct omfs_super_block *sb,
 int omfs_write_root_block(FILE *dev, struct omfs_super_block *sb,
 		struct omfs_root_block *root);
 u8 *omfs_get_block(FILE *dev, struct omfs_super_block *sb, u64 block);
+int omfs_write_block(omfs_info_t *info, u64 block, u8* buf);
 void omfs_release_block(u8 *buf);
 int omfs_check_crc(u8 *blk);
 omfs_inode_t *omfs_get_inode(omfs_info_t *info, u64 block);

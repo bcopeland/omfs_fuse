@@ -239,6 +239,11 @@ int omfs_write_bitmap(omfs_info_t *info, u8* bitmap)
 	return 0;
 }
 
+int omfs_write_block(omfs_info_t *info, u64 block, u8* buf)
+{
+	return _omfs_write_block(info->dev, info->super, block, buf, 
+        swap_be32(info->super->blocksize));
+}
 
 u8 *omfs_get_bitmap(omfs_info_t *info)
 {
