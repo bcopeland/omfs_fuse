@@ -47,13 +47,13 @@ static int scan(u8* buf, int bsize, int bits)
 
 int omfs_clear_range(omfs_info_t *info, u64 start, int count)
 {
-    u8 *bitmap = omfs_get_bitmap(info);
     u64 i;
+    u8 *bitmap = omfs_get_bitmap(info);
     if (!bitmap)
         return -ENOMEM;
 
-    for (i=start; i < count; i++)
-        clear_bit(bitmap, i);
+    for (i=0; i < count; i++)
+        clear_bit(bitmap, i + start);
 
     omfs_write_bitmap(info, bitmap);
     free(bitmap);
