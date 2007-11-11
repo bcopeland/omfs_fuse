@@ -112,6 +112,7 @@ void omfs_sync(omfs_info_t *info);
 int omfs_compute_hash(omfs_info_t *info, char *filename);
 omfs_inode_t *omfs_new_inode(omfs_info_t *info, u64 block, char *name, 
     char type);
+void omfs_clear_data(omfs_info_t *info, u64 block, int count);
 
 /* bitmap.c */
 int omfs_allocate_one_block(omfs_info_t *info, u64 block);

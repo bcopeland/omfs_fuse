@@ -47,7 +47,7 @@ static int scan(u8* buf, int bsize, int bits)
 
 int omfs_clear_range(omfs_info_t *info, u64 start, int count)
 {
-    u64 i;
+    int i;
     u8 *bitmap = omfs_get_bitmap(info);
     if (!bitmap)
         return -ENOMEM;

@@ -280,3 +280,19 @@ void omfs_sync(omfs_info_t *info)
 {
 	fflush(info->dev);
 }
+
+void omfs_clear_data(omfs_info_t *info, u64 block, int count)
+{
+    int i;
+
+    for (i=0; i < count; i++, block++)
+    {
+        u8 *buf = omfs_get_block(info->dev, info->super, block);
+        if (!buf)
+            return;
+
+        memset(buf, 0, swap_be32(info->super->blocksize));
+        omfs_write_block(info, block, buf);
+    }
+}
+

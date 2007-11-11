@@ -438,6 +438,9 @@ static int shrink_file(struct omfs_inode *inode, u64 size)
     u64 requested = (size + blocksize-1)/ blocksize;
     u64 block;
 
+    if (swap_be64(inode->size) == size)
+        return 0;
+
     block = omfs_find_location(requested, inode, &oe, &entry);
 
     // already truncated...
@@ -500,6 +503,7 @@ static int grow_extent(struct omfs_inode *inode, struct omfs_extent *oe,
             *num_added = 1;
             entry->blocks = swap_be64(swap_be64(entry->blocks) + 1);
             term->blocks = ~(swap_be64(swap_be64(~term->blocks) + 1));
+            omfs_clear_data(&omfs_info, new_block, 1);
             goto out;
         }
     }
@@ -520,6 +524,7 @@ static int grow_extent(struct omfs_inode *inode, struct omfs_extent *oe,
     if (ret)
         goto out_fail;
 
+    omfs_clear_data(&omfs_info, new_block, swap_be32(omfs_info.root->clustersize));
     oe->extent_count = swap_be32(1 + swap_be32(oe->extent_count));
 
     entry = term;
@@ -582,7 +587,7 @@ static int omfs_truncate(const char *path, off_t new_size)
     old_size = swap_be64(inode->size);
     buf = (u8*) inode;
 
-    if (new_size < old_size)
+    if (new_size <= old_size)
         return shrink_file(inode, new_size);
 
     return grow_file(inode, new_size);
