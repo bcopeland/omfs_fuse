@@ -33,7 +33,8 @@ static omfs_inode_t *omfs_find_node_ptr(u64 parent_ino, char *name,
     omfs_inode_t *last, *inode = omfs_get_inode(&omfs_info, parent_ino);
     u64 *chain_ptr = (u64*) ((u8*) inode + OMFS_DIR_START);
 
-    *owner = *entry = NULL;
+    *owner = NULL;
+    *entry = NULL;
 
     last = inode;
     if (!inode)
@@ -452,7 +453,7 @@ static int shrink_file(struct omfs_inode *inode, u64 size)
     u64 to_delete = swap_be64(entry->blocks);
     entry->blocks = swap_be64(block - swap_be64(entry->cluster));
     to_delete -= swap_be64(entry->blocks);
-    // clear_bits(block, to_delete);
+    omfs_clear_range(&omfs_info, block, to_delete);
     entry++;
 
     for (;;) 
@@ -460,12 +461,13 @@ static int shrink_file(struct omfs_inode *inode, u64 size)
         u64 next = swap_be64(oe->next);
         term = &oe->entry + swap_be32(oe->extent_count) - 1;
         while (entry != term) {
-            //clear_bits(swap_be64(entry->cluster), swap_be64(entry->count));
+            omfs_clear_range(&omfs_info, swap_be64(entry->cluster), 
+                swap_be64(entry->blocks));
             entry->blocks = 0;
             entry++;
         }
         
-        // clear inode allocation bits here if needed...
+        // FIXME clear inode allocation bits here if needed...
         update_extent_table(oe);
         omfs_write_inode(&omfs_info, inode);
 
@@ -604,13 +606,31 @@ static int omfs_unlink (const char *path)
     *entry = inode->sibling;
     omfs_write_inode(&omfs_info, owner);
     shrink_file(inode, 0);
+
+    omfs_clear_range(&omfs_info, swap_be64(inode->head.self), 
+        swap_be32(omfs_info.super->mirrors));
+
     omfs_release_inode(inode);
     omfs_release_inode(tmp);
-    // free inode bits here..
     return 0;
 }
 
-static int omfs_write(const char *path, char *buf, size_t size, 
+static int omfs_statfs(const char *path, struct statvfs *buf)
+{
+    buf->f_fsid = OMFS_MAGIC;
+    buf->f_bsize = swap_be32(omfs_info.super->blocksize);
+    buf->f_frsize = buf->f_bsize;
+    buf->f_blocks = swap_be64(omfs_info.super->num_blocks);
+    buf->f_files = buf->f_blocks;
+    buf->f_namemax = OMFS_NAMELEN;
+
+    buf->f_bfree = buf->f_bavail = buf->f_ffree = 
+        omfs_count_free(&omfs_info);
+
+    return 0;
+}
+
+static int omfs_write(const char *path, const char *buf, size_t size, 
           off_t offset, struct fuse_file_info *fi)
 {
     struct omfs_extent *oe;
@@ -667,6 +687,7 @@ static struct fuse_operations omfs_op = {
     .mknod      = omfs_mknod,
     .mkdir      = omfs_mkdir,
     .utimens    = omfs_utimens,
+    .statfs     = omfs_statfs,
     .truncate   = omfs_truncate,
     .unlink     = omfs_unlink,
 };

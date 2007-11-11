@@ -6,6 +6,22 @@
 #include "bits.h"
 
 
+static int nibblemap[] = {4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0};
+
+unsigned long omfs_count_free(omfs_info_t *info)
+{
+    unsigned int i;
+    unsigned long sum = 0;
+    size_t bsize = (swap_be64(info->super->num_blocks) + 7) / 8;
+
+    u8 *map = omfs_get_bitmap(info);
+
+    for (i = 0; i < bsize; i++)
+        sum += nibblemap[map[i] & 0xf] + nibblemap[(map[i] >> 4) & 0xf];
+
+    free(map);
+    return sum;
+}
 /* 
  * Scan through a bitmap for power-of-two sized region (max 8).  This 
  * should help to keep down fragmentation as mirrors will generally 
@@ -27,6 +43,21 @@ static int scan(u8* buf, int bsize, int bits)
         }
     }
     return i;
+}
+
+int omfs_clear_range(omfs_info_t *info, u64 start, int count)
+{
+    u8 *bitmap = omfs_get_bitmap(info);
+    u64 i;
+    if (!bitmap)
+        return -ENOMEM;
+
+    for (i=start; i < count; i++)
+        clear_bit(bitmap, i);
+
+    omfs_write_bitmap(info, bitmap);
+    free(bitmap);
+    return 0;
 }
 
 int omfs_allocate_one_block(omfs_info_t *info, u64 block)

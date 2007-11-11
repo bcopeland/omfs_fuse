@@ -116,5 +116,7 @@ omfs_inode_t *omfs_new_inode(omfs_info_t *info, u64 block, char *name,
 /* bitmap.c */
 int omfs_allocate_one_block(omfs_info_t *info, u64 block);
 int omfs_allocate_block(omfs_info_t *info, int size, u64 *return_block);
+int omfs_clear_range(omfs_info_t *info, u64 start, int count);
+unsigned long omfs_count_free(omfs_info_t *info);
 
 #endif
