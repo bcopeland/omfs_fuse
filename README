@@ -16,5 +16,6 @@ To use with ReplayTV 4xxx-5xxx, build like this:
 
 (At some point I'll make that mount-time configurable.)
 
-At present the FS is read-only.
+At present the FS is read-write, but don't expect it to do the write portion
+correctly yet.
 
