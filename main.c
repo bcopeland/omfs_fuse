@@ -381,7 +381,7 @@ static int omfs_read (const char *path, char *buf, size_t size, off_t offset,
         if (!block)
             goto out;
     
-        memcpy(&buf[copied], block, count);
+        memcpy(&buf[copied], block + start, count);
         free(block);
         start = 0;
     }
@@ -673,7 +673,7 @@ static int omfs_write(const char *path, const char *buf, size_t size,
         if (!data)
             goto out;
     
-        memcpy(&data[start], &buf[copied], count);
+        memcpy(data + start, buf + copied, count);
         omfs_write_block(&omfs_info, block, data);
         free(data);
         start = 0;
