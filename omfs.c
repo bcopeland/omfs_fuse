@@ -71,11 +71,11 @@ int omfs_read_super(FILE *dev, struct omfs_super_block *ret)
 }
 
 static int _omfs_write_block(FILE *dev, struct omfs_super_block *sb,
-		u64 block, u8* buf, size_t len)
+		u64 block, u8* buf, size_t len, int mirrors)
 {
 	int i, count;
 	_omfs_swap_buffer(buf, len);
-	for (i=0; i<swap_be32(sb->mirrors); i++)
+	for (i=0; i<mirrors; i++)
 	{
 	    fseeko(dev, (block + i) * swap_be32(sb->blocksize), SEEK_SET);
 	    count = fwrite(buf, 1, len, dev);
@@ -125,7 +125,8 @@ int omfs_write_root_block(FILE *dev, struct omfs_super_block *sb,
 {
 	u64 block = swap_be64(root->head.self);
 	return _omfs_write_block(dev, sb, block, (u8*) root, 
-			sizeof(struct omfs_root_block));
+			sizeof(struct omfs_root_block),
+            swap_be32(sb->mirrors));
 }
 
 
@@ -168,7 +169,8 @@ int omfs_write_inode(omfs_info_t *info, omfs_inode_t *inode)
 	_update_header_checksums((u8*)inode, size);
 
 	return _omfs_write_block(info->dev, info->super, 
-			swap_be64(inode->head.self), (u8*) inode, size);
+			swap_be64(inode->head.self), (u8*) inode, size,
+            swap_be32(info->super->mirrors));
 }
 
 omfs_inode_t *omfs_new_inode(omfs_info_t *info, u64 block, 
@@ -242,7 +244,7 @@ int omfs_write_bitmap(omfs_info_t *info, u8* bitmap)
 int omfs_write_block(omfs_info_t *info, u64 block, u8* buf)
 {
 	return _omfs_write_block(info->dev, info->super, block, buf, 
-        swap_be32(info->super->blocksize));
+        swap_be32(info->super->blocksize), 1);
 }
 
 u8 *omfs_get_bitmap(omfs_info_t *info)
@@ -293,6 +295,7 @@ void omfs_clear_data(omfs_info_t *info, u64 block, int count)
 
         memset(buf, 0, swap_be32(info->super->blocksize));
         omfs_write_block(info, block, buf);
+        free(buf);
     }
 }
 

@@ -376,7 +376,7 @@ static int omfs_read (const char *path, char *buf, size_t size, off_t offset,
 
     for (; copied < size ; copied += count, requested++)
     {
-        count = min(size, blocksize-start);
+        count = min(size-copied, blocksize-start);
         u8 *block = omfs_get_data_n(requested, fi);
         if (!block)
             goto out;
@@ -518,13 +518,12 @@ static int grow_extent(struct omfs_inode *inode, struct omfs_extent *oe,
     }
 
     to_alloc = swap_be32(omfs_info.root->clustersize);
-    ret = omfs_allocate_block(&omfs_info, 
-        swap_be32(omfs_info.root->clustersize), &new_block);
+    ret = omfs_allocate_block(&omfs_info, to_alloc, &new_block);
 
     if (ret)
         goto out_fail;
 
-    omfs_clear_data(&omfs_info, new_block, swap_be32(omfs_info.root->clustersize));
+    omfs_clear_data(&omfs_info, new_block, to_alloc);
     oe->extent_count = swap_be32(1 + swap_be32(oe->extent_count));
 
     entry = term;
@@ -653,7 +652,7 @@ static int omfs_write(const char *path, const char *buf, size_t size,
 
     for (; copied < size ; copied += count, requested++)
     {
-        count = min(size, blocksize-start);
+        count = min(size-copied, blocksize-start);
 
         u64 block = omfs_find_location(requested, inode, &oe, &entry);
         if (!block) {
