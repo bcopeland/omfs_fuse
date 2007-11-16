@@ -443,11 +443,15 @@ static int shrink_file(struct omfs_inode *inode, u64 size)
 
     block = omfs_find_location(requested, inode, &oe, &entry);
 
+    inode->size = swap_be64(size);
+
     // already truncated...
     if (!block)
-        return -EINVAL;
-
-    inode->size = swap_be64(size);
+    {
+        // FIXME fsx hits this case
+        omfs_write_inode(&omfs_info, inode);
+        return 0;
+    }
 
     // entry points to the last valid extent, with num_blocks-(block-cluster)
     // blocks to free.  Then we free everything else and rebuild the current
@@ -494,7 +498,6 @@ static int grow_extent(struct omfs_inode *inode, struct omfs_extent *oe,
 
     if (entry != term)
     {
-        printf ("Trying to grow current extent by one block.\n");
         // try extending current extent
         new_block = swap_be64(entry->cluster) + swap_be64(entry->blocks);
 
@@ -574,22 +577,34 @@ static int grow_file(struct omfs_inode *inode, u64 size)
     return 0;
 }
 
-static int omfs_truncate(const char *path, off_t new_size)
+static int _truncate(omfs_inode_t *inode, off_t new_size)
 {
-    u8 *buf;
-    u64 old_size;
-    omfs_inode_t *inode = omfs_lookup(path);
-
-    if (!inode)
-        return -ENOENT;
-
-    old_size = swap_be64(inode->size);
-    buf = (u8*) inode;
+    u64 old_size = swap_be64(inode->size);
 
     if (new_size <= old_size)
         return shrink_file(inode, new_size);
 
     return grow_file(inode, new_size);
+}
+
+static int omfs_truncate(const char *path, off_t new_size)
+{
+    omfs_inode_t *inode = omfs_lookup(path);
+
+    if (!inode)
+        return -ENOENT;
+
+    return _truncate(inode, new_size);
+}
+
+static int omfs_ftruncate(const char *path, off_t new_size, 
+      struct fuse_file_info *fi)
+{
+    omfs_inode_t *inode = get_handle(fi);
+    if (!inode)
+        return -ENOENT;
+
+    return _truncate(inode, new_size);
 }
 
 static int omfs_unlink (const char *path)
@@ -678,6 +693,11 @@ static int omfs_write(const char *path, const char *buf, size_t size,
         start = 0;
     }
 out:
+    if (copied + offset > swap_be64(inode->size))
+    {
+        inode->size = swap_be64(copied + offset);
+        omfs_write_inode(&omfs_info, inode);
+    }
     return copied;
 }
 
@@ -693,6 +713,7 @@ static struct fuse_operations omfs_op = {
     .utimens    = omfs_utimens,
     .statfs     = omfs_statfs,
     .truncate   = omfs_truncate,
+    .ftruncate  = omfs_ftruncate,
     .unlink     = omfs_unlink,
 };
 
