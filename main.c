@@ -724,7 +724,7 @@ int main(int argc, char *argv[])
     char *device = NULL;
     int i, fuse_argc=0;
 
-    char **fuse_argv = malloc(argc * sizeof(char));
+    char **fuse_argv = malloc(argc * sizeof(char *));
 
     for (i=0; i < argc; i++)
     {
