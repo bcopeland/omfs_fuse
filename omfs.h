@@ -24,6 +24,7 @@ struct omfs_info {
 	FILE *dev;
 	struct omfs_super_block *super;
 	struct omfs_root_block *root;
+	int swap;
 };
 
 struct omfs_super_block {
@@ -93,13 +94,12 @@ typedef struct omfs_super_block omfs_super_t;
 typedef struct omfs_root_block omfs_root_t;
 typedef struct omfs_inode omfs_inode_t;
 
-int omfs_read_super(FILE *dev, struct omfs_super_block *ret);
-int omfs_write_super(FILE *dev, struct omfs_super_block *super);
-int omfs_read_root_block(FILE *dev, struct omfs_super_block *sb, 
+int omfs_read_super(FILE *dev, struct omfs_super_block *ret, int *swap);
+int omfs_write_super(FILE *dev, struct omfs_super_block *super, int swap);
+int omfs_read_root_block(FILE *dev, struct omfs_super_block *sb, int swap, 
 		struct omfs_root_block *root);
-int omfs_write_root_block(FILE *dev, struct omfs_super_block *sb,
-		struct omfs_root_block *root);
-u8 *omfs_get_block(FILE *dev, struct omfs_super_block *sb, u64 block);
+int omfs_write_root_block(omfs_info_t *info, struct omfs_root_block *root);
+u8 *omfs_get_block(omfs_info_t *info, u64 block);
 int omfs_write_block(omfs_info_t *info, u64 block, u8* buf);
 void omfs_release_block(u8 *buf);
 int omfs_check_crc(u8 *blk);

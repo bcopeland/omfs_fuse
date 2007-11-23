@@ -11,11 +11,10 @@ To use:
     $ omfs -a <device-file> <mount-point>   # mount a device
     $ fusermount -u <mount-point>           # unmount
 
-To use with ReplayTV 4xxx-5xxx, build like this:
-    $ CFLAGS=-DRTV_HACK make
-
-(At some point I'll make that mount-time configurable.)
+OMFS now automatically swaps blocks if the magic number is little-endian.
+This will enable ReplayTV 4xxx and 5xxx series devices to work without 
+special compilation.
 
 At present the FS is read-write, but don't expect it to do the write portion
-correctly yet.
+correctly yet.  You can use the "-o ro" mount option to enable read-only mode.
 

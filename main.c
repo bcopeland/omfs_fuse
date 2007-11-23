@@ -360,7 +360,7 @@ static u8 *omfs_get_data_n(u64 requested, struct fuse_file_info *fi)
     u64 block = omfs_find_location(requested, inode, &oe, &entry);
 
     if (block > 0)
-        return omfs_get_block(omfs_info.dev, omfs_info.super, block);
+        return omfs_get_block(&omfs_info, block);
 
     return NULL;
 }
@@ -683,7 +683,7 @@ static int omfs_write(const char *path, const char *buf, size_t size,
                 goto out;
         }
 
-        data = omfs_get_block(omfs_info.dev, omfs_info.super, block);
+        data = omfs_get_block(&omfs_info, block);
         if (!data)
             goto out;
     
@@ -722,7 +722,7 @@ int main(int argc, char *argv[])
     omfs_super_t super;
     omfs_root_t root;
     char *device = NULL;
-    int i, fuse_argc=0;
+    int i, is_swapped, fuse_argc=0;
 
     char **fuse_argv = malloc(argc * sizeof(char *));
 
@@ -751,12 +751,13 @@ int main(int argc, char *argv[])
         return 2;
     }
 
-    if (omfs_read_super(fp, &super))
+    if (omfs_read_super(fp, &super, &is_swapped))
     {
         printf ("Could not read super block\n");
         return 3;
     }
-    if (omfs_read_root_block(fp, &super, &root))
+
+    if (omfs_read_root_block(fp, &super, is_swapped, &root))
     {
         printf ("Could not read root block\n");
         return 4;
@@ -765,6 +766,7 @@ int main(int argc, char *argv[])
     omfs_info.dev = fp;
     omfs_info.super = &super;
     omfs_info.root = &root;
+    omfs_info.swap = is_swapped;
 
     return fuse_main(fuse_argc, fuse_argv, &omfs_op, NULL);
 }
