@@ -6,9 +6,11 @@
 #include <string.h>
 #include <assert.h>
 #include <fuse.h>
+#include <glib.h>
 #include "omfs.h"
 
 static omfs_info_t omfs_info;
+static GHashTable *inode_cache;
 
 #define min(a,b) ((a)<(b)?(a):(b))
 
@@ -22,13 +24,46 @@ static inline omfs_inode_t *get_handle(struct fuse_file_info *fi)
     return (omfs_inode_t *) (long) fi->fh;
 }
 
+static guint inode_cache_hash(gconstpointer key)
+{
+    return (int) *((u64*) key);
+}
+
+static gboolean inode_cache_compare(gconstpointer key, gconstpointer key2)
+{
+    return *((u64*)key) == *((u64*) key2);
+}
+
+static void cache_save_inode(omfs_inode_t *inode)
+{
+    g_hash_table_replace(inode_cache, &inode->head.self, inode);
+    omfs_write_inode(&omfs_info, inode);
+}
+
+static omfs_inode_t *cache_get_inode(u64 ino)
+{
+    omfs_inode_t *inode;
+    u64 tmp = swap_be64(ino);
+
+    inode = g_hash_table_lookup(inode_cache, &tmp);
+    if (!inode)
+    {
+        inode = omfs_get_inode(&omfs_info, ino);
+        if (inode) {
+            g_hash_table_replace(inode_cache, &inode->head.self, inode);
+        }
+    }
+
+    return inode;
+}
+
 /*
  *  Caller must free returned pointer.
  */
 static omfs_inode_t *omfs_find_node_ptr(u64 parent_ino, char *name, 
         omfs_inode_t **owner, u64 **entry)
 {
-    omfs_inode_t *last, *inode = omfs_get_inode(&omfs_info, parent_ino);
+    omfs_inode_t *last, *inode = cache_get_inode(parent_ino);
     u64 *chain_ptr = (u64*) ((u8*) inode + OMFS_DIR_START);
 
     *owner = NULL;
@@ -41,7 +76,7 @@ static omfs_inode_t *omfs_find_node_ptr(u64 parent_ino, char *name,
     chain_ptr += omfs_compute_hash(&omfs_info, name);
     while (*chain_ptr != ~0)
     {
-        inode = omfs_get_inode(&omfs_info, swap_be64(*chain_ptr));
+        inode = cache_get_inode(swap_be64(*chain_ptr));
         if (!inode) 
             goto out;
         
@@ -49,7 +84,6 @@ static omfs_inode_t *omfs_find_node_ptr(u64 parent_ino, char *name,
             break;
 
         chain_ptr = &inode->sibling;
-        omfs_release_inode(last);
         last = inode;
     }
 
@@ -61,9 +95,6 @@ static omfs_inode_t *omfs_find_node_ptr(u64 parent_ino, char *name,
     *owner = last;
     *entry = chain_ptr;
 out:
-    if (!inode)
-        omfs_release_inode(last);
-    
     return inode;
 }
 
@@ -74,10 +105,6 @@ static omfs_inode_t *omfs_find_by_name(omfs_inode_t *parent, char *name)
 
     inode = omfs_find_node_ptr(swap_be64(parent->head.self), name, 
         &owner, &entry);
-
-    if (owner)
-        omfs_release_inode(owner);
-
     return inode;
 }
 
@@ -120,12 +147,11 @@ static omfs_inode_t *omfs_lookup(const char *path)
     if (!p) 
         return NULL;
 
-    inode = omfs_get_inode(&omfs_info, swap_be64(omfs_info.root->root_dir));
+    inode = cache_get_inode(swap_be64(omfs_info.root->root_dir));
 
     tmp = strtok(p, "/");
     while (tmp && inode)
     {
-        printf ("lu: %s\n", tmp);
         inode = omfs_find_by_name(inode, tmp);
         tmp = strtok(NULL, "/");
     }
@@ -158,7 +184,6 @@ static int omfs_getattr(const char *path, struct stat *stbuf)
     stbuf->st_uid = ctx->uid;
     stbuf->st_gid = ctx->gid;
 
-    omfs_release_inode(inode);   
     return 0;
 }
 
@@ -187,27 +212,24 @@ static int omfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         {
             u64 sibling;
 
-            tmp = omfs_get_inode(&omfs_info, inum);
+            tmp = cache_get_inode(inum);
             if (!tmp)
                 return -ENOENT;
 
             filler(buf, tmp->name, NULL, 0);
             sibling = tmp->sibling;
-            omfs_release_inode(tmp);
 
             while (sibling != ~0)
             {
-                tmp = omfs_get_inode(&omfs_info, swap_be64(sibling));
+                tmp = cache_get_inode(swap_be64(sibling));
                 if (!tmp)
                     return -ENOENT;
 
                 filler(buf, tmp->name, NULL, 0);
                 sibling = tmp->sibling;
-                omfs_release_inode(tmp);
             }
         }
     }
-    omfs_release_inode(dir);
     return 0;
 }
 
@@ -247,12 +269,10 @@ static int _add_inode(const char *path, char type)
     new_inode->sibling = table[hash];
     table[hash] = swap_be64(block);
     
-    omfs_write_inode(&omfs_info, new_inode);
-    omfs_write_inode(&omfs_info, parent);
+    cache_save_inode(new_inode);
+    cache_save_inode(parent);
     
-    omfs_release_inode(new_inode);
 out1:
-    omfs_release_inode(parent);
 out2:
     free(tmp);
     return err;
@@ -281,8 +301,7 @@ static int omfs_rename(const char *old, const char *new)
     // FIXME - add cross dir rename
     strncpy(inode->name, file, OMFS_NAMELEN);
     inode->name[OMFS_NAMELEN-1] = 0;
-    omfs_write_inode(&omfs_info, inode);
-    omfs_release_inode(inode);
+    cache_save_inode(inode);
     return 0;
 }
 
@@ -316,7 +335,6 @@ static u64 find_block(struct omfs_extent_entry **entry, u64 block, int count)
  *  Given an offset into a file, find the extent table and entry 
  *  containing the location.  Return the fs block of the location.
  */
-// FIXME: return the inode so it can be freed
 static u64 omfs_find_location(u64 requested, omfs_inode_t *inode, 
             struct omfs_extent **ret_oe, struct omfs_extent_entry **ret_entry)
 {
@@ -339,7 +357,7 @@ static u64 omfs_find_location(u64 requested, omfs_inode_t *inode,
         if (next == ~0)
             break;
 
-        inode = omfs_get_inode(&omfs_info, next);
+        inode = cache_get_inode(next);
         oe = (struct omfs_extent *) ((u8*) inode + OMFS_EXTENT_CONT);
     }
 out:
@@ -397,8 +415,7 @@ static int omfs_utimens(const char *path, const struct timespec tv[2])
     u64 ctime = tv[1].tv_sec * 1000LL + tv[1].tv_nsec/1000;
 
     inode->ctime = swap_be64(ctime);
-    omfs_write_inode(&omfs_info, inode);
-    omfs_release_inode(inode);
+    cache_save_inode(inode);
     return 0;
 }
 
@@ -447,7 +464,7 @@ static int shrink_file(struct omfs_inode *inode, u64 size)
     if (!block)
     {
         // FIXME fsx hits this case
-        omfs_write_inode(&omfs_info, inode);
+        cache_save_inode(inode);
         goto out;
     }
 
@@ -474,13 +491,13 @@ static int shrink_file(struct omfs_inode *inode, u64 size)
         
         // FIXME clear inode allocation bits here if needed...
         update_extent_table(oe);
-        omfs_write_inode(&omfs_info, inode);
+        cache_save_inode(inode);
 
         if (next == ~0)
             break;
 
         // omfs_release_inode(inode);
-        inode = omfs_get_inode(&omfs_info, next);
+        inode = cache_get_inode(next);
         if (!inode)
             goto out;
         oe = (struct omfs_extent *) ((u8*) inode + OMFS_EXTENT_CONT);
@@ -544,7 +561,7 @@ static int grow_extent(struct omfs_inode *inode, struct omfs_extent *oe,
 
     term->blocks = ~(swap_be64(swap_be64(~term->blocks) + *num_added));
     
-    omfs_write_inode(&omfs_info, inode);
+    cache_save_inode(inode);
 out:
 out_fail:
     return ret;
@@ -577,7 +594,7 @@ static int grow_file(struct omfs_inode *inode, u64 size)
     }
     
     inode->size = swap_be64(size);
-    omfs_write_inode(&omfs_info, inode);
+    cache_save_inode(inode);
 
     return 0;
 }
@@ -629,7 +646,7 @@ static int omfs_unlink (const char *path)
         return -ENOENT;
 
     *entry = inode->sibling;
-    omfs_write_inode(&omfs_info, owner);
+    cache_save_inode(owner);
 
     to_clear = swap_be64(inode->head.self);
     shrink_file(inode, 0);
@@ -638,7 +655,7 @@ static int omfs_unlink (const char *path)
         swap_be32(omfs_info.super->mirrors));
 
     //omfs_release_inode(inode);
-    omfs_release_inode(tmp);
+    //omfs_release_inode(tmp);
     return 0;
 }
 
@@ -704,7 +721,7 @@ out:
     if (copied + offset > swap_be64(inode->size))
     {
         inode->size = swap_be64(copied + offset);
-        omfs_write_inode(&omfs_info, inode);
+        cache_save_inode(inode);
     }
     return copied;
 }
@@ -775,6 +792,8 @@ int main(int argc, char *argv[])
     omfs_info.super = &super;
     omfs_info.root = &root;
     omfs_info.swap = is_swapped;
+
+    inode_cache = g_hash_table_new(inode_cache_hash, inode_cache_compare);
 
     return fuse_main(fuse_argc, fuse_argv, &omfs_op, NULL);
 }
