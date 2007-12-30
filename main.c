@@ -1,6 +1,4 @@
 /* 
- * OMFS in Fuse 
- * (c) 2007 Bob Copeland
  * Released under GPL
  */
 #include <errno.h>
@@ -16,12 +14,12 @@ static omfs_info_t omfs_info;
 
 static inline void set_handle(struct fuse_file_info *fi, omfs_inode_t *inode)
 {
-    fi->fh = (uint64_t) inode;
+    fi->fh = (long) inode;
 }
 
 static inline omfs_inode_t *get_handle(struct fuse_file_info *fi)
 {
-    return (omfs_inode_t *) fi->fh;
+    return (omfs_inode_t *) (long) fi->fh;
 }
 
 /*
@@ -438,8 +436,8 @@ static int shrink_file(struct omfs_inode *inode, u64 size)
     u64 requested = (size + blocksize-1)/ blocksize;
     u64 block;
 
-    if (swap_be64(inode->size) == size)
-        return 0;
+    if (swap_be64(inode->size) == size) 
+        goto out;
 
     block = omfs_find_location(requested, inode, &oe, &entry);
 
@@ -450,7 +448,7 @@ static int shrink_file(struct omfs_inode *inode, u64 size)
     {
         // FIXME fsx hits this case
         omfs_write_inode(&omfs_info, inode);
-        return 0;
+        goto out;
     }
 
     // entry points to the last valid extent, with num_blocks-(block-cluster)
@@ -481,10 +479,17 @@ static int shrink_file(struct omfs_inode *inode, u64 size)
         if (next == ~0)
             break;
 
+        // omfs_release_inode(inode);
         inode = omfs_get_inode(&omfs_info, next);
+        if (!inode)
+            goto out;
         oe = (struct omfs_extent *) ((u8*) inode + OMFS_EXTENT_CONT);
     }
-    // FIXME inode leak
+out:
+/*
+    if (inode)
+        omfs_release_inode(inode); 
+*/
     return 0;
 }
 
@@ -612,6 +617,7 @@ static int omfs_unlink (const char *path)
     omfs_inode_t *owner, *tmp;
     omfs_inode_t *inode = omfs_lookup(path);
     u64 *entry;
+    u64 to_clear;
 
     if (!inode)
         return -ENOENT;
@@ -624,12 +630,14 @@ static int omfs_unlink (const char *path)
 
     *entry = inode->sibling;
     omfs_write_inode(&omfs_info, owner);
+
+    to_clear = swap_be64(inode->head.self);
     shrink_file(inode, 0);
 
-    omfs_clear_range(&omfs_info, swap_be64(inode->head.self), 
+    omfs_clear_range(&omfs_info, to_clear,
         swap_be32(omfs_info.super->mirrors));
 
-    omfs_release_inode(inode);
+    //omfs_release_inode(inode);
     omfs_release_inode(tmp);
     return 0;
 }
