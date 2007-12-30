@@ -14,6 +14,12 @@ static GHashTable *inode_cache;
 
 #define min(a,b) ((a)<(b)?(a):(b))
 
+struct inode_ref
+{
+    int refcount;
+    omfs_inode_t *inode;
+};
+
 static inline void set_handle(struct fuse_file_info *fi, omfs_inode_t *inode)
 {
     fi->fh = (long) inode;
@@ -36,26 +42,73 @@ static gboolean inode_cache_compare(gconstpointer key, gconstpointer key2)
 
 static void cache_save_inode(omfs_inode_t *inode)
 {
-    g_hash_table_replace(inode_cache, &inode->head.self, inode);
     omfs_write_inode(&omfs_info, inode);
+}
+
+static void cache_put_inode(omfs_inode_t *inode)
+{
+    struct inode_ref *ref;
+
+    ref = g_hash_table_lookup(inode_cache, &inode->head.self);
+    if (!ref)
+        return;
+
+    ref->refcount--;
+    if (!ref->refcount)
+    {
+        g_hash_table_remove(inode_cache, &inode->head.self);
+        omfs_release_inode(inode);
+        free(ref);
+    }
+}
+
+static struct inode_ref *cache_add_new_entry(omfs_inode_t *inode)
+{
+    struct inode_ref *ref;
+
+    ref = malloc(sizeof(struct inode_ref));
+
+    ref->refcount = 0;
+    ref->inode = inode;
+    g_hash_table_replace(inode_cache, &inode->head.self, ref);
+
+    return ref;
 }
 
 static omfs_inode_t *cache_get_inode(u64 ino)
 {
-    omfs_inode_t *inode;
+    struct inode_ref *ref;
+    omfs_inode_t *inode = NULL;
     u64 tmp = swap_be64(ino);
 
-    inode = g_hash_table_lookup(inode_cache, &tmp);
-    if (!inode)
+    ref = g_hash_table_lookup(inode_cache, &tmp);
+    if (!ref)
     {
         inode = omfs_get_inode(&omfs_info, ino);
-        if (inode) {
-            g_hash_table_replace(inode_cache, &inode->head.self, inode);
-        }
-    }
+        if (!inode) 
+            goto out;
 
+        ref = cache_add_new_entry(inode);
+        if (!ref)
+            goto out;
+    }
+    ref->refcount++;
+    inode = ref->inode;
+out:
     return inode;
 }
+
+static omfs_inode_t *cache_new_inode(omfs_info_t *info, u64 block, char *name, 
+        char type)
+{
+    omfs_inode_t *new_inode = omfs_new_inode(info, block, name, type);
+    if (!new_inode)
+        return NULL;
+
+    cache_add_new_entry(new_inode);
+    return new_inode;
+}
+
 
 /*
  *  Caller must free returned pointer.
@@ -256,7 +309,7 @@ static int _add_inode(const char *path, char type)
     if (err)
         goto out1;
 
-    new_inode = omfs_new_inode(&omfs_info, block, file, type);
+    new_inode = cache_new_inode(&omfs_info, block, file, type);
     if (!new_inode) {
         err = -ENOMEM;
         goto out1;
