@@ -280,9 +280,111 @@ int omfs_write_block(omfs_info_t *info, u64 block, u8* buf)
         swap_be32(info->super->blocksize), 1, info->swap);
 }
 
+static void set_inuse_file(omfs_info_t *info, omfs_inode_t *file, u8 *bmap)
+{
+	struct omfs_extent *oe;
+	struct omfs_extent_entry *entry;
+	u64 next;
+	int extent_count, i;
+    omfs_inode_t *inode;
+
+    if (!file)
+        return;
+
+    next = swap_be64(file->head.self);
+    inode = file;
+	oe = (struct omfs_extent *) (((u8*) inode) + OMFS_EXTENT_START);
+
+	for(;;) 
+	{
+		extent_count = swap_be32(oe->extent_count);
+
+        for (i=0; i<swap_be32(info->super->mirrors); i++)
+            set_bit(bmap, next + i);
+
+		next = swap_be64(oe->next);
+		entry = &oe->entry;
+
+		// ignore last entry as it is the terminator
+		for (; extent_count > 1; extent_count--)
+		{
+			u64 start = swap_be64(entry->cluster);
+
+			for (i=0; i<swap_be64(entry->blocks); i++)
+				set_bit(bmap, start + i);
+
+			entry++;
+		}
+
+		if (next == ~0)
+			break;
+
+        if (inode != file)
+		    omfs_release_inode(inode);
+
+		inode = omfs_get_inode(info, next);
+		if (!inode)
+			goto err;
+
+	    oe = (struct omfs_extent *) (((u8*) inode) + OMFS_EXTENT_CONT);
+	}
+
+    if (inode != file)
+	    omfs_release_inode(inode);
+err:
+	return;
+}
+
+static void set_inuse_dir(omfs_info_t *info, omfs_inode_t *dir, u8 *bmap)
+{
+    u64 *ptr;
+    int i;
+
+    if (!dir)
+        return;
+        
+    int num_entries = (swap_be32(dir->head.body_size) + 
+        sizeof(omfs_header_t) - OMFS_DIR_START) / 8;
+
+    ptr = (u64*) ((u8*) dir + OMFS_DIR_START);
+
+    for (i=0; i<swap_be32(info->super->mirrors); i++)
+        set_bit(bmap, swap_be64(dir->head.self) + i);
+
+    for (i=0; i<num_entries; i++, ptr++)
+    {
+        u64 inum = swap_be64(*ptr);
+        while (inum != ~0)
+        {
+            omfs_inode_t *tmp = omfs_get_inode(info, inum);
+            if (!tmp)
+                continue;
+
+            if (tmp->type == OMFS_DIR)
+                set_inuse_dir(info, tmp, bmap);
+            else
+                set_inuse_file(info, tmp, bmap);
+
+            inum = swap_be64(tmp->sibling);
+            omfs_release_inode(tmp);
+        }
+    }
+}
+
 static void set_inuse_bits(omfs_info_t *info)
 {
-    //u8 *bmap = info->bitmap->bmap;
+    u8 *bmap = info->bitmap->bmap;  
+    u64 root_dir;
+    int i;
+    omfs_inode_t *root;
+
+    root_dir = swap_be64(info->root->root_dir);
+    
+    for (i=0; i<root_dir; i++)
+        set_bit(bmap, i);
+    
+    root = omfs_get_inode(info, root_dir);
+    set_inuse_dir(info, root, bmap);
 }
 
 int omfs_load_bitmap(omfs_info_t *info)
