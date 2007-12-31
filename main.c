@@ -323,23 +323,6 @@ static int omfs_mkdir(const char *path, mode_t mode)
     return _add_inode(path, OMFS_DIR);
 }
 
-static int omfs_rename(const char *old, const char *new)
-{
-    omfs_inode_t *inode = omfs_lookup(old);
-    char *tmp, *dir, *file;
-
-    if (!inode)
-        return -ENOENT;
-
-    tmp = split_path(new, &dir, &file);
-
-    // FIXME - add cross dir rename
-    strncpy(inode->name, file, OMFS_NAMELEN);
-    inode->name[OMFS_NAMELEN-1] = 0;
-    cache_save_inode(inode);
-    return 0;
-}
-
 static int omfs_open (const char *path, struct fuse_file_info *fi)
 {
     omfs_inode_t *inode = omfs_lookup(path);
@@ -662,16 +645,14 @@ static int omfs_ftruncate(const char *path, off_t new_size,
     return _truncate(inode, new_size);
 }
 
-static int omfs_unlink (const char *path)
+/*
+ *  Unlink an inode from its parent (does not shrink or delete the node). 
+ */
+static int _unlink(omfs_inode_t *inode)
 {
+    int ret = 0;
     omfs_inode_t *last, *next;
     u64 *chain_ptr;
-    u64 to_clear;
-    omfs_inode_t *inode = omfs_lookup(path);
-    int ret = 0;
-
-    if (!inode)
-        return -ENOENT;
 
     next = cache_get_inode(swap_be64(inode->parent));
     if (!next)
@@ -700,6 +681,22 @@ static int omfs_unlink (const char *path)
         last = next;
     }
     cache_put_inode(next);
+out:
+    return ret;
+}
+
+static int omfs_unlink (const char *path)
+{
+    u64 to_clear;
+    omfs_inode_t *inode = omfs_lookup(path);
+    int ret = 0;
+
+    if (!inode)
+        return -ENOENT;
+
+    ret = _unlink(inode);
+    if (ret)
+        goto out;
 
     to_clear = swap_be64(inode->head.self);
     shrink_file(inode, 0);
@@ -707,6 +704,53 @@ static int omfs_unlink (const char *path)
     omfs_clear_range(&omfs_info, to_clear,
         swap_be32(omfs_info.super->mirrors));
 out:
+    return ret;
+}
+
+static int omfs_rename(const char *old, const char *new)
+{
+    omfs_inode_t *inode = omfs_lookup(old);
+    omfs_inode_t *parent;
+    char *tmp, *dir, *file;
+    char *dest, *dest_dir, *dest_file;
+    u64 *table, sibling;
+    int ret = 0;
+
+    if (!inode)
+        return -ENOENT;
+
+    tmp = split_path(old, &dir, &file);
+    dest = split_path(new, &dest_dir, &dest_file);
+ 
+    // changing the name will change the hash location, so just
+    // unlink and relink in any case
+    ret = _unlink(inode);
+    if (ret)
+        goto out;
+
+    parent = omfs_lookup(dest_dir);
+    if (!parent)
+    {
+        ret = -ENOENT;
+        goto out;
+    }
+
+    strncpy(inode->name, dest_file, OMFS_NAMELEN);
+    inode->name[OMFS_NAMELEN-1] = 0;
+    
+    table = (u64*) ((u8*) parent + OMFS_DIR_START);
+    table += omfs_compute_hash(&omfs_info, inode->name);
+    sibling = *table;
+    *table = inode->head.self;
+    inode->parent = parent->head.self;
+    
+    cache_save_inode(parent);
+    cache_put_inode(parent);
+out:
+    cache_save_inode(inode);
+    cache_put_inode(inode);
+    free(tmp);
+    free(dest);
     return ret;
 }
 
