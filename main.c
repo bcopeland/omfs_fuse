@@ -110,54 +110,30 @@ static omfs_inode_t *cache_new_inode(omfs_info_t *info, u64 block, char *name,
 }
 
 
-/*
- *  Caller must free returned pointer.
- */
-static omfs_inode_t *omfs_find_node_ptr(u64 parent_ino, char *name, 
-        omfs_inode_t **owner, u64 **entry)
+static omfs_inode_t *omfs_find_by_name(omfs_inode_t *parent, char *name)
 {
-    omfs_inode_t *last, *inode = cache_get_inode(parent_ino);
-    u64 *chain_ptr = (u64*) ((u8*) inode + OMFS_DIR_START);
-
-    *owner = NULL;
-    *entry = NULL;
-
-    last = inode;
-    if (!inode)
-        return NULL;
+    u64 next;
+    omfs_inode_t *inode;
+    u64 *chain_ptr = (u64*) ((u8*) parent + OMFS_DIR_START);
 
     chain_ptr += omfs_compute_hash(&omfs_info, name);
-    while (*chain_ptr != ~0)
+    next = swap_be64(*chain_ptr);
+    while (next != ~0)
     {
-        inode = cache_get_inode(swap_be64(*chain_ptr));
+        inode = cache_get_inode(next);
         if (!inode) 
             goto out;
         
         if (strcmp(inode->name,name) == 0)
             break;
 
-        chain_ptr = &inode->sibling;
-        last = inode;
+        next = swap_be64(inode->sibling);
+        cache_put_inode(inode);
     }
 
-    if (*chain_ptr == ~0) {
+    if (next == ~0) 
         inode = NULL;
-        goto out;
-    }
-
-    *owner = last;
-    *entry = chain_ptr;
 out:
-    return inode;
-}
-
-static omfs_inode_t *omfs_find_by_name(omfs_inode_t *parent, char *name)
-{
-    omfs_inode_t *inode, *owner;
-    u64 *entry;
-
-    inode = omfs_find_node_ptr(swap_be64(parent->head.self), name, 
-        &owner, &entry);
     return inode;
 }
 
@@ -190,7 +166,7 @@ static char *split_path(const char *path, char **basename, char **dirname)
 static omfs_inode_t *omfs_lookup(const char *path)
 {
     char *tmp, *p;
-    omfs_inode_t *inode = NULL;
+    omfs_inode_t *inode = NULL, *tmp_inode;
 
     // starting at the root, find the inode of path
     if (path[0] == '/')
@@ -205,7 +181,9 @@ static omfs_inode_t *omfs_lookup(const char *path)
     tmp = strtok(p, "/");
     while (tmp && inode)
     {
-        inode = omfs_find_by_name(inode, tmp);
+        tmp_inode = omfs_find_by_name(inode, tmp);
+        cache_put_inode(inode);
+        inode = tmp_inode;
         tmp = strtok(NULL, "/");
     }
     free(p);
@@ -272,6 +250,7 @@ static int omfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
             filler(buf, tmp->name, NULL, 0);
             sibling = tmp->sibling;
 
+            cache_put_inode(tmp);
             while (sibling != ~0)
             {
                 tmp = cache_get_inode(swap_be64(sibling));
@@ -280,6 +259,7 @@ static int omfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
                 filler(buf, tmp->name, NULL, 0);
                 sibling = tmp->sibling;
+                cache_put_inode(tmp);
             }
         }
     }
@@ -549,17 +529,15 @@ static int shrink_file(struct omfs_inode *inode, u64 size)
         if (next == ~0)
             break;
 
-        // omfs_release_inode(inode);
+        cache_put_inode(inode);
         inode = cache_get_inode(next);
         if (!inode)
             goto out;
         oe = (struct omfs_extent *) ((u8*) inode + OMFS_EXTENT_CONT);
     }
 out:
-/*
     if (inode)
-        omfs_release_inode(inode); 
-*/
+        cache_put_inode(inode); 
     return 0;
 }
 
@@ -684,32 +662,50 @@ static int omfs_ftruncate(const char *path, off_t new_size,
 
 static int omfs_unlink (const char *path)
 {
-    omfs_inode_t *owner, *tmp;
-    omfs_inode_t *inode = omfs_lookup(path);
-    u64 *entry;
+    omfs_inode_t *last, *next;
+    u64 *chain_ptr;
     u64 to_clear;
+    omfs_inode_t *inode = omfs_lookup(path);
+    int ret = 0;
 
     if (!inode)
         return -ENOENT;
 
-    tmp = omfs_find_node_ptr(swap_be64(inode->parent), inode->name,
-            &owner, &entry);
-
-    if (!tmp)
+    next = cache_get_inode(swap_be64(inode->parent));
+    if (!next)
         return -ENOENT;
 
-    *entry = inode->sibling;
-    cache_save_inode(owner);
+    chain_ptr = (u64*) ((u8*) next + OMFS_DIR_START);
+    chain_ptr += omfs_compute_hash(&omfs_info, inode->name);
+
+    last = next;
+    while (*chain_ptr != ~0)
+    {
+        next = cache_get_inode(swap_be64(*chain_ptr));
+        if (!next) {
+            ret = -ENOENT;
+            goto out;
+        }
+        if (strcmp(next->name,inode->name) == 0)
+        {
+            *chain_ptr = next->sibling;
+            cache_save_inode(last);
+            cache_put_inode(last);
+            break;
+        }
+        chain_ptr = &next->sibling;
+        cache_put_inode(last);
+        last = next;
+    }
+    cache_put_inode(next);
 
     to_clear = swap_be64(inode->head.self);
     shrink_file(inode, 0);
 
     omfs_clear_range(&omfs_info, to_clear,
         swap_be32(omfs_info.super->mirrors));
-
-    //omfs_release_inode(inode);
-    //omfs_release_inode(tmp);
-    return 0;
+out:
+    return ret;
 }
 
 static int omfs_statfs(const char *path, struct statvfs *buf)
