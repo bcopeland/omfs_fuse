@@ -888,6 +888,12 @@ int main(int argc, char *argv[])
     omfs_info.root = &root;
     omfs_info.swap = is_swapped;
 
+    if (omfs_load_bitmap(&omfs_info))
+    {
+        printf ("Could not load bitmap\n");
+        return 5;
+    }
+
     inode_cache = g_hash_table_new(inode_cache_hash, inode_cache_compare);
 
     return fuse_main(fuse_argc, fuse_argv, &omfs_op, NULL);

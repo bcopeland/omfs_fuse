@@ -10,6 +10,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include "omfs.h"
+#include "bits.h"
 #include "crc.h"
 
 static void _omfs_make_empty_table(u8 *buf, int offset)
@@ -90,6 +91,8 @@ static int _omfs_write_block(FILE *dev, struct omfs_super_block *sb,
 	    if (count != len)
 		    return -1;
 	}
+    if (swap)
+	    _omfs_swap_buffer(buf, len);
 	return 0;
 }
 
@@ -242,19 +245,32 @@ void omfs_release_inode(omfs_inode_t *oi)
 	free(oi);
 }
 
-int omfs_write_bitmap(omfs_info_t *info, u8* bitmap)
+int omfs_flush_bitmap(omfs_info_t *info)
 {
-	size_t size, count;
+	size_t size, bsize, count;
 	u64 bitmap_blk = swap_be64(info->root->bitmap);
+    int blocksize = swap_be32(info->super->blocksize);
+    u8 *bmap = info->bitmap->bmap;
+    int i;
+
+    if (bitmap_blk == ~0)
+        return 0;
 
 	size = (swap_be64(info->super->num_blocks) + 7) / 8;
-	fseeko(info->dev, bitmap_blk * swap_be32(info->super->blocksize), 
-			SEEK_SET);
-    if (info->swap)
-        _omfs_swap_buffer(bitmap, count);
-	count = fwrite(bitmap, 1, size, info->dev);
-	if (size != count)
-		return -1;
+	bsize = (size + blocksize - 1) / blocksize;
+
+    for (i=0; i < bsize; i++, bitmap_blk++, bmap += blocksize)
+    {
+        if (test_bit(info->bitmap->dirty, i)) 
+        {
+	        fseeko(info->dev, bitmap_blk * blocksize, SEEK_SET);
+	        count = fwrite(bmap, 1, blocksize, info->dev);
+	        if (size != count)
+		        return -EIO;
+            clear_bit(info->bitmap->dirty, i);
+        }
+    }
+
 	return 0;
 }
 
@@ -264,25 +280,63 @@ int omfs_write_block(omfs_info_t *info, u64 block, u8* buf)
         swap_be32(info->super->blocksize), 1, info->swap);
 }
 
-u8 *omfs_get_bitmap(omfs_info_t *info)
+static void set_inuse_bits(omfs_info_t *info)
 {
-	size_t size;
+    //u8 *bmap = info->bitmap->bmap;
+}
+
+int omfs_load_bitmap(omfs_info_t *info)
+{
+	size_t size, dirty_size;
 	u8 *buf;
+	u8 *dirty_bits;
 	u64 bitmap_blk = swap_be64(info->root->bitmap);
-	if (bitmap_blk == ~0)
-		return NULL;
+    int blocksize = swap_be32(info->super->blocksize);
+    struct omfs_bitmap *bitmap;
+    int ret = 0;
 
 	size = (swap_be64(info->super->num_blocks) + 7) / 8;
+    dirty_size = (size + blocksize - 1) / blocksize;
 
-	if (!(buf = malloc(size)))
-		return NULL;
+	if (!(buf = malloc(size))) {
+        ret = -ENOMEM;
+        goto out1;
+    }
 
-	fseeko(info->dev, bitmap_blk * swap_be32(info->super->blocksize), SEEK_SET);
+    if (!(dirty_bits = calloc(1, dirty_size))) {
+        ret = -ENOMEM;
+        goto out2;
+    }
 
-	fread(buf, 1, size, info->dev);
-    if (info->swap)
-        _omfs_swap_buffer(buf, size);
-	return buf;
+    bitmap = malloc(sizeof(struct omfs_bitmap));
+    if (!bitmap) {
+        ret = -ENOMEM;
+        goto out3;
+    }
+       
+    info->bitmap = bitmap; 
+    bitmap->dirty = dirty_bits;
+    bitmap->bmap = buf;
+
+	if (bitmap_blk == ~0)
+    {
+        // create the bitmap by traversal
+        memset(buf, 0, size);
+        set_inuse_bits(info);
+    }
+    else
+    {
+	    fseeko(info->dev, bitmap_blk * blocksize, SEEK_SET);
+	    fread(buf, 1, size, info->dev);
+    }
+    goto out1;
+
+out3:
+    free(dirty_bits);
+out2:
+    free(buf);
+out1:
+    return ret;
 }
 
 int omfs_compute_hash(omfs_info_t *info, char *filename)

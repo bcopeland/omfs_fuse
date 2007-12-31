@@ -24,6 +24,7 @@ struct omfs_info {
 	FILE *dev;
 	struct omfs_super_block *super;
 	struct omfs_root_block *root;
+    struct omfs_bitmap *bitmap;
 	int swap;
 };
 
@@ -88,6 +89,11 @@ struct omfs_extent {
 	struct omfs_extent_entry entry;
 };
 
+struct omfs_bitmap {
+    u8 *dirty;
+    u8 *bmap;
+};
+
 typedef struct omfs_info omfs_info_t;
 typedef struct omfs_header omfs_header_t;
 typedef struct omfs_super_block omfs_super_t;
@@ -106,9 +112,9 @@ int omfs_check_crc(u8 *blk);
 omfs_inode_t *omfs_get_inode(omfs_info_t *info, u64 block);
 int omfs_write_inode(omfs_info_t *info, omfs_inode_t *inode);
 void omfs_release_inode(omfs_inode_t *inode);
-int omfs_write_bitmap(omfs_info_t *info, u8 *bitmap);
-u8 *omfs_get_bitmap(omfs_info_t *info);
 void omfs_sync(omfs_info_t *info);
+int omfs_load_bitmap(omfs_info_t *info);
+int omfs_flush_bitmap(omfs_info_t *info);
 int omfs_compute_hash(omfs_info_t *info, char *filename);
 omfs_inode_t *omfs_new_inode(omfs_info_t *info, u64 block, char *name, 
     char type);

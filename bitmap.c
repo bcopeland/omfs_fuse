@@ -14,14 +14,26 @@ unsigned long omfs_count_free(omfs_info_t *info)
     unsigned long sum = 0;
     size_t bsize = (swap_be64(info->super->num_blocks) + 7) / 8;
 
-    u8 *map = omfs_get_bitmap(info);
+    u8 *map = info->bitmap->bmap;
 
     for (i = 0; i < bsize; i++)
         sum += nibblemap[map[i] & 0xf] + nibblemap[(map[i] >> 4) & 0xf];
 
-    free(map);
     return sum;
 }
+
+/*
+ *  Mark the bitmap block which holds an allocated/cleared bit dirty.
+ *  Call after every set_bit/clear_bit in the bitmap.  Block is the
+ *  *data* block number.
+ */
+static void mark_dirty(omfs_info_t *info, u64 block)
+{
+    int blocksize = swap_be32(info->super->blocksize);
+    u64 bit_blk = (block >> 3) / blocksize;
+    set_bit(info->bitmap->dirty, bit_blk);
+}
+
 /* 
  * Scan through a bitmap for power-of-two sized region (max 8).  This 
  * should help to keep down fragmentation as mirrors will generally 
@@ -48,32 +60,29 @@ static int scan(u8* buf, int bsize, int bits)
 int omfs_clear_range(omfs_info_t *info, u64 start, int count)
 {
     int i;
-    u8 *bitmap = omfs_get_bitmap(info);
-    if (!bitmap)
-        return -ENOMEM;
+    u8 *bitmap = info->bitmap->bmap;
 
-    for (i=0; i < count; i++)
+    for (i=0; i < count; i++) {
         clear_bit(bitmap, i + start);
+        mark_dirty(info, i + start);
+    }
 
-    omfs_write_bitmap(info, bitmap);
-    free(bitmap);
+    omfs_flush_bitmap(info);
     return 0;
 }
 
 int omfs_allocate_one_block(omfs_info_t *info, u64 block)
 {
     int ok = 0;
-    u8 *bitmap = omfs_get_bitmap(info);
-    if (!bitmap)
-        return -ENOMEM;
+    u8 *bitmap = info->bitmap->bmap;
 
     if (!test_bit(bitmap, block))
     {
         set_bit(bitmap, block);
-        omfs_write_bitmap(info, bitmap);
+        mark_dirty(info, block);
+        omfs_flush_bitmap(info);
         ok = 1;
     }
-    free(bitmap);
     return ok;
 }
 
@@ -81,11 +90,9 @@ int omfs_allocate_block(omfs_info_t *info, int size, u64 *return_block)
 {
     size_t bsize;
     int ret = 0;
-    int block;
+    int block, i;
 
-    u8 *bitmap = omfs_get_bitmap(info);
-    if (!bitmap)
-        return -ENOMEM;
+    u8 *bitmap = info->bitmap->bmap;
 
     bsize = (swap_be64(info->super->num_blocks) + 7) / 8;
 
@@ -97,9 +104,12 @@ int omfs_allocate_block(omfs_info_t *info, int size, u64 *return_block)
         goto out;
     }
     *return_block = block;
-    omfs_write_bitmap(info, bitmap);
+
+    for (i=0; i < size; i++)
+        mark_dirty(info, block + i);
+    
+    omfs_flush_bitmap(info);
 out:
-    free(bitmap);
     return ret;
 }
 
