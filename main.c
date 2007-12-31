@@ -1,4 +1,6 @@
 /* 
+ * OMFS in Fuse
+ * (c) 2007 Bob Copeland
  * Released under GPL
  */
 #include <errno.h>
