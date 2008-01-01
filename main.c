@@ -241,28 +241,16 @@ static int omfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     for (i=0; i<num_entries; i++, ptr++)
     {
         u64 inum = swap_be64(*ptr);
-        if (inum != ~0)
+        while (inum != ~0)
         {
-            u64 sibling;
-
             tmp = cache_get_inode(inum);
             if (!tmp)
                 return -ENOENT;
 
             filler(buf, tmp->name, NULL, 0);
-            sibling = tmp->sibling;
+            inum = swap_be64(tmp->sibling);
 
             cache_put_inode(tmp);
-            while (sibling != ~0)
-            {
-                tmp = cache_get_inode(swap_be64(sibling));
-                if (!tmp)
-                    return -ENOENT;
-
-                filler(buf, tmp->name, NULL, 0);
-                sibling = tmp->sibling;
-                cache_put_inode(tmp);
-            }
         }
     }
     return 0;
@@ -554,8 +542,15 @@ static int grow_extent(struct omfs_inode *inode, struct omfs_extent *oe,
 
     if (swap_be32(oe->extent_count) > max_count-1) {
         // no more room, add to next ptr...
-        ret = -EIO;
-        goto out_fail;
+        ret = omfs_allocate_block(&omfs_info, 
+            swap_be32(omfs_info.super->mirrors), &new_block);
+        if (ret)
+            goto out_fail;
+
+        inode = cache_new_inode(&omfs_info, new_block, "", 
+            OMFS_INODE_CONTINUATION);
+        oe = (struct omfs_extent *) ((u8*) inode + OMFS_EXTENT_CONT);
+        term = &oe->entry;
     }
 
     to_alloc = swap_be32(omfs_info.root->clustersize);

@@ -221,6 +221,11 @@ omfs_inode_t *omfs_new_inode(omfs_info_t *info, u64 block,
     {
         _omfs_make_empty_table(buf, OMFS_EXTENT_START);
     }
+    else if (type == OMFS_INODE_CONTINUATION)
+    {
+        inode->head.type = OMFS_INODE_CONTINUATION;
+        _omfs_make_empty_table(buf, OMFS_EXTENT_CONT);
+    }
     else
     {
         memset(&buf[OMFS_DIR_START], 0xff, 
