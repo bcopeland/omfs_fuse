@@ -264,7 +264,7 @@ int omfs_flush_bitmap(omfs_info_t *info)
 	size = (swap_be64(info->super->num_blocks) + 7) / 8;
 	bsize = (size + blocksize - 1) / blocksize;
 
-    for (i=0; i < bsize; i++, bitmap_blk++, bmap += blocksize)
+    for (i=0; i < bsize * 8; i++, bitmap_blk++, bmap += blocksize)
     {
         if (test_bit(info->bitmap->dirty, i)) 
         {
@@ -399,11 +399,17 @@ int omfs_load_bitmap(omfs_info_t *info)
 	u8 *dirty_bits;
 	u64 bitmap_blk = swap_be64(info->root->bitmap);
     int blocksize = swap_be32(info->super->blocksize);
+    int size_blks;
     struct omfs_bitmap *bitmap;
     int ret = 0;
 
 	size = (swap_be64(info->super->num_blocks) + 7) / 8;
-    dirty_size = (size + blocksize - 1) / blocksize;
+
+    // round up to a full block
+    size_blks = (size + blocksize - 1) / blocksize;
+    size = size_blks * blocksize;
+
+    dirty_size = (size_blks + 7) / 8;
 
 	if (!(buf = malloc(size))) {
         ret = -ENOMEM;
@@ -420,7 +426,7 @@ int omfs_load_bitmap(omfs_info_t *info)
         ret = -ENOMEM;
         goto out3;
     }
-       
+
     info->bitmap = bitmap; 
     bitmap->dirty = dirty_bits;
     bitmap->bmap = buf;
