@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <sys/time.h>
+#include <time.h>
 #include <errno.h>
 #include "omfs.h"
 #include "bits.h"
@@ -185,9 +187,17 @@ int omfs_read_root_block(FILE *dev, struct omfs_super_block *sb, int swap,
  */
 int omfs_write_inode(omfs_info_t *info, omfs_inode_t *inode)
 {
+    struct timezone tz;
+    struct timeval tv;
+    u64 ctime;
 	int size = swap_be32(inode->head.body_size) + sizeof(omfs_header_t);
 
+    gettimeofday(&tv, &tz);
+
+	ctime = tv.tv_sec * 1000LL + tv.tv_usec;
+
 	_update_header_checksums((u8*)inode, size);
+    inode->ctime = swap_be64(ctime);
 
 	return _omfs_write_block(info->dev, info->super, 
 			swap_be64(inode->head.self), (u8*) inode, size,
@@ -203,6 +213,8 @@ omfs_inode_t *omfs_new_inode(omfs_info_t *info, u64 block,
     inode = omfs_get_inode(info, block);
 	if (!inode)
 		return NULL;
+
+    memset(inode, 0, swap_be32(info->super->blocksize));
 
     inode->head.self = swap_be64(block); 
     inode->head.version = 1;
