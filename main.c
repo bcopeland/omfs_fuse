@@ -357,7 +357,7 @@ static u64 omfs_find_location(u64 requested, omfs_inode_t *inode,
         entry = &oe->entry;
 
         found_block = find_block(&entry, requested, extent_count);
-        if (found_block > 0)
+        if (found_block != 0)
             goto out;
 
         if (next == ~0)
@@ -381,7 +381,7 @@ static u8 *omfs_get_data_n(u64 requested, struct fuse_file_info *fi)
 
     u64 block = omfs_find_location(requested, inode, &oe, &entry);
 
-    if (block > 0)
+    if (block != 0)
         return omfs_get_block(&omfs_info, block);
 
     return NULL;
@@ -851,6 +851,7 @@ int main(int argc, char *argv[])
         else 
             fuse_argv[fuse_argc++] = argv[i];
     }
+
     fuse_argv[fuse_argc] = NULL;
 
     if (!device)

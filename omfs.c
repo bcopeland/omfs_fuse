@@ -105,10 +105,12 @@ static int _omfs_read_block(FILE *dev, struct omfs_super_block *sb,
 				u64 block, u8 *buf, int swap)
 {
 	int count;
-	fseeko(dev, block * swap_be32(sb->blocksize), SEEK_SET);
-	count = fread(buf, 1, swap_be32(sb->blocksize), dev);
+    int blocksize = swap_be32(sb->blocksize);
 
-	if (count < swap_be32(sb->blocksize))
+	fseeko(dev, block * blocksize, SEEK_SET);
+	count = fread(buf, 1, blocksize, dev);
+
+	if (count < blocksize)
 		return -1;
 
     if (swap)
