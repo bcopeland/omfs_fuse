@@ -45,16 +45,17 @@ int omfs_write_super(omfs_info_t *info)
 {
 	int count;
 
+    if (info->swap)
+	    _omfs_swap_buffer(info->super, sizeof(struct omfs_super_block));
+
     pthread_mutex_lock(&info->dev_mutex);
 	fseeko(info->dev, 0LL, SEEK_SET);
-    if (info->swap)
-	    _omfs_swap_buffer(info->super, sizeof(struct omfs_super_block));
 	count = fwrite(info->super, 1, sizeof(struct omfs_super_block), info->dev);
+    pthread_mutex_unlock(&info->dev_mutex);
 
     if (info->swap)
 	    _omfs_swap_buffer(info->super, sizeof(struct omfs_super_block));
 
-    pthread_mutex_unlock(&info->dev_mutex);
 	if (count < sizeof(struct omfs_super_block))
 		return -1;
 
@@ -71,6 +72,7 @@ int omfs_read_super(omfs_info_t *info)
     pthread_mutex_lock(&info->dev_mutex);
 	fseeko(info->dev, 0LL, SEEK_SET);
 	count = fread(info->super, 1, sizeof(struct omfs_super_block), info->dev);
+    pthread_mutex_unlock(&info->dev_mutex);
 
 	if (count < sizeof(struct omfs_super_block)) 
     {
@@ -88,7 +90,6 @@ int omfs_read_super(omfs_info_t *info)
         err = -EMEDIUMTYPE;
 
 out:
-    pthread_mutex_unlock(&info->dev_mutex);
 	return err;
 }
 
@@ -133,9 +134,11 @@ static int _omfs_read_block(omfs_info_t *info, u64 block, u8 *buf)
     int blocksize;
 
     blocksize = swap_be32(sb->blocksize);
+
     pthread_mutex_lock(&info->dev_mutex);
 	fseeko(dev, block * blocksize, SEEK_SET);
 	count = fread(buf, 1, blocksize, dev);
+    pthread_mutex_unlock(&info->dev_mutex);
 
     if (info->swap)
 	    _omfs_swap_buffer(buf, count);
@@ -143,7 +146,6 @@ static int _omfs_read_block(omfs_info_t *info, u64 block, u8 *buf)
 	if (count < blocksize)
 		ret = -1;
 
-    pthread_mutex_unlock(&info->dev_mutex);
 	return ret;
 }
 
