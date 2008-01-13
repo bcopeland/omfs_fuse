@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <fuse.h>
 #include <glib.h>
+#include <pthread.h>
 #include "omfs.h"
 
 static omfs_info_t omfs_info;
@@ -834,10 +835,10 @@ static struct fuse_operations omfs_op = {
 
 int main(int argc, char *argv[])
 {
-    omfs_super_t super;
-    omfs_root_t root;
     char *device = NULL;
-    int i, is_swapped, fuse_argc=0;
+    int i, fuse_argc=0;
+    struct omfs_super_block super;
+    struct omfs_root_block root;
 
     char **fuse_argv = malloc(argc * sizeof(char *));
 
@@ -867,22 +868,22 @@ int main(int argc, char *argv[])
         return 2;
     }
 
-    if (omfs_read_super(fp, &super, &is_swapped))
+    omfs_info.dev = fp;
+    omfs_info.super = &super;
+    omfs_info.root = &root;
+    pthread_mutex_init(&omfs_info.dev_mutex, NULL);
+
+    if (omfs_read_super(&omfs_info))
     {
         printf ("Could not read super block\n");
         return 3;
     }
 
-    if (omfs_read_root_block(fp, &super, is_swapped, &root))
+    if (omfs_read_root_block(&omfs_info))
     {
         printf ("Could not read root block\n");
         return 4;
     }
-
-    omfs_info.dev = fp;
-    omfs_info.super = &super;
-    omfs_info.root = &root;
-    omfs_info.swap = is_swapped;
 
     if (omfs_load_bitmap(&omfs_info))
     {

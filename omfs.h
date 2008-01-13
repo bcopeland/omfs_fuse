@@ -26,6 +26,7 @@ struct omfs_info {
 	struct omfs_root_block *root;
     struct omfs_bitmap *bitmap;
 	int swap;
+    pthread_mutex_t dev_mutex;
 };
 
 struct omfs_super_block {
@@ -100,11 +101,10 @@ typedef struct omfs_super_block omfs_super_t;
 typedef struct omfs_root_block omfs_root_t;
 typedef struct omfs_inode omfs_inode_t;
 
-int omfs_read_super(FILE *dev, struct omfs_super_block *ret, int *swap);
-int omfs_write_super(FILE *dev, struct omfs_super_block *super, int swap);
-int omfs_read_root_block(FILE *dev, struct omfs_super_block *sb, int swap, 
-		struct omfs_root_block *root);
-int omfs_write_root_block(omfs_info_t *info, struct omfs_root_block *root);
+int omfs_read_super(omfs_info_t *info);
+int omfs_write_super(omfs_info_t *info);
+int omfs_read_root_block(omfs_info_t *info);
+int omfs_write_root_block(omfs_info_t *info);
 u8 *omfs_get_block(omfs_info_t *info, u64 block);
 int omfs_write_block(omfs_info_t *info, u64 block, u8* buf);
 void omfs_release_block(u8 *buf);

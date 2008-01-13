@@ -11,6 +11,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <errno.h>
+#include <pthread.h>
 #include "omfs.h"
 #include "bits.h"
 #include "crc.h"
@@ -39,15 +40,20 @@ static void _omfs_swap_buffer(void *buf, int count)
 /*
  * Write the superblock to disk
  */
-int omfs_write_super(FILE *dev, struct omfs_super_block *super, int swap)
+int omfs_write_super(omfs_info_t *info)
 {
 	int count;
 
-	fseeko(dev, 0LL, SEEK_SET);
-    if (swap)
-	    _omfs_swap_buffer(super, sizeof(struct omfs_super_block));
-	count = fwrite(super, 1, sizeof(struct omfs_super_block), dev);
+    pthread_mutex_lock(&info->dev_mutex);
+	fseeko(info->dev, 0LL, SEEK_SET);
+    if (info->swap)
+	    _omfs_swap_buffer(info->super, sizeof(struct omfs_super_block));
+	count = fwrite(info->super, 1, sizeof(struct omfs_super_block), info->dev);
 
+    if (info->swap)
+	    _omfs_swap_buffer(info->super, sizeof(struct omfs_super_block));
+
+    pthread_mutex_unlock(&info->dev_mutex);
 	if (count < sizeof(struct omfs_super_block))
 		return -1;
 
@@ -57,45 +63,60 @@ int omfs_write_super(FILE *dev, struct omfs_super_block *super, int swap)
 /*
  * Read the superblock and store the result in ret
  */
-int omfs_read_super(FILE *dev, struct omfs_super_block *ret, int *swap)
+int omfs_read_super(omfs_info_t *info)
 {
-	int count;
+	int count, err = 0;
 
-	fseeko(dev, 0LL, SEEK_SET);
-	count = fread(ret, 1, sizeof(struct omfs_super_block), dev);
+    pthread_mutex_lock(&info->dev_mutex);
+	fseeko(info->dev, 0LL, SEEK_SET);
+	count = fread(info->super, 1, sizeof(struct omfs_super_block), info->dev);
 
-	if (count < sizeof(struct omfs_super_block))
-		return -EIO;
-
-    *swap = 0;
-    if (ret->magic == OMFS_MAGIC)       // unswapped
+	if (count < sizeof(struct omfs_super_block)) 
     {
-	    _omfs_swap_buffer(ret, count);
-        *swap = 1;
+        err = -EIO;
+		goto out;
     }
-    else if (swap_be32(ret->magic) != OMFS_MAGIC)
-        return -EMEDIUMTYPE;
 
-	return 0;
+    info->swap = 0;
+    if (info->super->magic == OMFS_MAGIC)       // unswapped
+    {
+	    _omfs_swap_buffer(info->super, count);
+        info->swap = 1;
+    }
+    else if (swap_be32(info->super->magic) != OMFS_MAGIC)
+        err = -EMEDIUMTYPE;
+
+out:
+    pthread_mutex_unlock(&info->dev_mutex);
+	return err;
 }
 
-static int _omfs_write_block(FILE *dev, struct omfs_super_block *sb,
-		u64 block, u8* buf, size_t len, int mirrors, int swap)
+static int _omfs_write_block(omfs_info_t *info, 
+		u64 block, u8* buf, size_t len, int mirrors)
 {
-	int i, count;
+	int i, count, ret = 0;
+    FILE *dev = info->dev;
+    struct omfs_super_block *sb = info->super;
 
-    if (swap)
+    if (info->swap)
 	    _omfs_swap_buffer(buf, len);
+
+    pthread_mutex_lock(&info->dev_mutex);
 	for (i=0; i<mirrors; i++)
 	{
 	    fseeko(dev, (block + i) * swap_be32(sb->blocksize), SEEK_SET);
 	    count = fwrite(buf, 1, len, dev);
 	    if (count != len)
-		    return -1;
+        {
+		    ret = -1;
+            goto out;
+        }
 	}
-    if (swap)
+out:
+    if (info->swap)
 	    _omfs_swap_buffer(buf, len);
-	return 0;
+    pthread_mutex_unlock(&info->dev_mutex);
+	return ret;
 }
 
 
@@ -103,21 +124,26 @@ static int _omfs_write_block(FILE *dev, struct omfs_super_block *sb,
  * Read the numbered block into a raw array.
  * buf must be at least blocksize bytes.
  */
-static int _omfs_read_block(FILE *dev, struct omfs_super_block *sb, 
-				u64 block, u8 *buf, int swap)
+static int _omfs_read_block(omfs_info_t *info, u64 block, u8 *buf)
 {
-	int count;
-    int blocksize = swap_be32(sb->blocksize);
+	int count, ret = 0;
+    FILE *dev = info->dev;
+    struct omfs_super_block *sb = info->super;
+    int blocksize;
 
+    blocksize = swap_be32(sb->blocksize);
+    pthread_mutex_lock(&info->dev_mutex);
 	fseeko(dev, block * blocksize, SEEK_SET);
 	count = fread(buf, 1, blocksize, dev);
 
-	if (count < blocksize)
-		return -1;
-
-    if (swap)
+    if (info->swap)
 	    _omfs_swap_buffer(buf, count);
-	return 0;
+
+	if (count < blocksize)
+		ret = -1;
+
+    pthread_mutex_unlock(&info->dev_mutex);
+	return ret;
 }
 
 static void _update_header_checksums(u8 *buf, int block_size) 
@@ -136,25 +162,22 @@ static void _update_header_checksums(u8 *buf, int block_size)
 }
 
 
-int omfs_write_root_block(omfs_info_t *info, 
-		struct omfs_root_block *root)
+int omfs_write_root_block(omfs_info_t *info)
 {
-	u64 block = swap_be64(root->head.self);
-	return _omfs_write_block(info->dev, info->super, 
-			block, (u8*) root, sizeof(struct omfs_root_block), 
-            swap_be32(info->super->mirrors), 
-            info->swap);
+	u64 block = swap_be64(info->root->head.self);
+	return _omfs_write_block(info, block, (u8*) info->root, 
+            sizeof(struct omfs_root_block), 
+            swap_be32(info->super->mirrors));
 }
 
 
-static u8 *_omfs_get_block(FILE *dev, struct omfs_super_block *sb, 
-        u64 block, int swap)
+static u8 *_omfs_get_block(omfs_info_t *info, u64 block)
 {
 	u8 *buf;
-	if (!(buf = malloc(swap_be32(sb->blocksize))))
+	if (!(buf = malloc(swap_be32(info->super->blocksize))))
 		return 0;
 
-	if (_omfs_read_block(dev, sb, block, buf, swap))
+	if (_omfs_read_block(info, block, buf))
 	{
 		free(buf);
 		return 0;
@@ -165,19 +188,18 @@ static u8 *_omfs_get_block(FILE *dev, struct omfs_super_block *sb,
 
 u8 *omfs_get_block(omfs_info_t *info, u64 block)
 {
-    return _omfs_get_block(info->dev, info->super, block, info->swap);
+    return _omfs_get_block(info, block);
 }
 
-int omfs_read_root_block(FILE *dev, struct omfs_super_block *sb, int swap,
-		struct omfs_root_block *root)
+int omfs_read_root_block(omfs_info_t *info)
 {
 	u8 *buf;
 
-	buf = _omfs_get_block(dev, sb, swap_be64(sb->root_block), swap);
+	buf = _omfs_get_block(info, swap_be64(info->super->root_block));
 	if (!buf)
 		return -1;
 
-	memcpy(root, buf, sizeof(struct omfs_root_block));
+	memcpy(info->root, buf, sizeof(struct omfs_root_block));
 	free(buf);
 	return 0;
 }
@@ -195,13 +217,12 @@ int omfs_write_inode(omfs_info_t *info, omfs_inode_t *inode)
     gettimeofday(&tv, &tz);
 
 	ctime = tv.tv_sec * 1000LL + tv.tv_usec;
-
-	_update_header_checksums((u8*)inode, size);
     inode->ctime = swap_be64(ctime);
 
-	return _omfs_write_block(info->dev, info->super, 
-			swap_be64(inode->head.self), (u8*) inode, size,
-            swap_be32(info->super->mirrors), info->swap);
+	_update_header_checksums((u8*)inode, size);
+
+	return _omfs_write_block(info, swap_be64(inode->head.self), 
+            (u8*) inode, size, swap_be32(info->super->mirrors));
 }
 
 omfs_inode_t *omfs_new_inode(omfs_info_t *info, u64 block, 
@@ -266,7 +287,7 @@ void omfs_release_inode(omfs_inode_t *oi)
 
 int omfs_flush_bitmap(omfs_info_t *info)
 {
-	size_t size, bsize, count;
+	size_t size, bsize, count, ret = 0;
 	u64 bitmap_blk = swap_be64(info->root->bitmap);
     int blocksize = swap_be32(info->super->blocksize);
     u8 *bmap = info->bitmap->bmap;
@@ -278,25 +299,30 @@ int omfs_flush_bitmap(omfs_info_t *info)
 	size = (swap_be64(info->super->num_blocks) + 7) / 8;
 	bsize = (size + blocksize - 1) / blocksize;
 
+    pthread_mutex_lock(&info->dev_mutex);
     for (i=0; i < bsize * 8; i++, bitmap_blk++, bmap += blocksize)
     {
         if (test_bit(info->bitmap->dirty, i)) 
         {
 	        fseeko(info->dev, bitmap_blk * blocksize, SEEK_SET);
 	        count = fwrite(bmap, 1, blocksize, info->dev);
-	        if (size != count)
-		        return -EIO;
+	        if (size != count) {
+		        ret = -EIO;
+                goto out;
+            }
             clear_bit(info->bitmap->dirty, i);
         }
     }
 
-	return 0;
+out:
+    pthread_mutex_unlock(&info->dev_mutex);
+	return ret;
 }
 
 int omfs_write_block(omfs_info_t *info, u64 block, u8* buf)
 {
-	return _omfs_write_block(info->dev, info->super, block, buf, 
-        swap_be32(info->super->blocksize), 1, info->swap);
+	return _omfs_write_block(info, block, buf, 
+        swap_be32(info->super->blocksize), 1);
 }
 
 static void set_inuse_file(omfs_info_t *info, omfs_inode_t *file, u8 *bmap)
@@ -453,8 +479,10 @@ int omfs_load_bitmap(omfs_info_t *info)
     }
     else
     {
+        pthread_mutex_lock(&info->dev_mutex);
 	    fseeko(info->dev, bitmap_blk * blocksize, SEEK_SET);
 	    fread(buf, 1, size, info->dev);
+        pthread_mutex_unlock(&info->dev_mutex);
     }
     goto out1;
 
