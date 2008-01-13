@@ -448,6 +448,7 @@ static void update_extent_table(struct omfs_extent *oe)
         }
     }
     // entry points at terminator
+    entry->cluster = ~0;
     entry->blocks = swap_be64(~count);
     oe->extent_count = swap_be32(total_extents);
 }

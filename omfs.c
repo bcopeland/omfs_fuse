@@ -22,6 +22,7 @@ static void _omfs_make_empty_table(u8 *buf, int offset)
     oe->next = ~0ULL;
     oe->extent_count = swap_be32(1),
 	oe->fill = swap_be32(0x22),
+	oe->entry.cluster = ~0ULL;
 	oe->entry.blocks = ~0ULL;
 }
 
@@ -249,11 +250,12 @@ omfs_inode_t *omfs_new_inode(omfs_info_t *info, u64 block,
     inode->one_goes_here = swap_be32(1);
     strncpy(inode->name, name, OMFS_NAMELEN);
     inode->name[OMFS_NAMELEN-1] = 0;
-	inode->size = 0;
+    inode->size = swap_be64((u64) swap_be32(info->super->sys_blocksize));
 
     buf = (u8*) inode;
     if (type == OMFS_FILE)
     {
+        inode->size = 0;
         _omfs_make_empty_table(buf, OMFS_EXTENT_START);
     }
     else if (type == OMFS_INODE_CONTINUATION)
