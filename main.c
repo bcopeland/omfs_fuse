@@ -14,6 +14,7 @@
 
 static omfs_info_t omfs_info;
 static GHashTable *inode_cache;
+static pthread_mutex_t cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #define min(a,b) ((a)<(b)?(a):(b))
 
@@ -52,9 +53,10 @@ static void cache_put_inode(omfs_inode_t *inode)
 {
     struct inode_ref *ref;
 
+    pthread_mutex_lock(&cache_mutex);
     ref = g_hash_table_lookup(inode_cache, &inode->head.self);
     if (!ref)
-        return;
+        goto out;
 
     ref->refcount--;
     if (!ref->refcount)
@@ -63,8 +65,13 @@ static void cache_put_inode(omfs_inode_t *inode)
         omfs_release_inode(inode);
         free(ref);
     }
+out:
+    pthread_mutex_unlock(&cache_mutex);
 }
 
+/**
+ *  Called wth cache lock held.
+ */
 static struct inode_ref *cache_add_new_entry(omfs_inode_t *inode)
 {
     struct inode_ref *ref;
@@ -84,6 +91,7 @@ static omfs_inode_t *cache_get_inode(u64 ino)
     omfs_inode_t *inode = NULL;
     u64 tmp = swap_be64(ino);
 
+    pthread_mutex_lock(&cache_mutex);
     ref = g_hash_table_lookup(inode_cache, &tmp);
     if (!ref)
     {
@@ -98,6 +106,7 @@ static omfs_inode_t *cache_get_inode(u64 ino)
     ref->refcount++;
     inode = ref->inode;
 out:
+    pthread_mutex_unlock(&cache_mutex);
     return inode;
 }
 
@@ -108,7 +117,9 @@ static omfs_inode_t *cache_new_inode(omfs_info_t *info, u64 block, char *name,
     if (!new_inode)
         return NULL;
 
+    pthread_mutex_lock(&cache_mutex);
     cache_add_new_entry(new_inode);
+    pthread_mutex_unlock(&cache_mutex);
     return new_inode;
 }
 
