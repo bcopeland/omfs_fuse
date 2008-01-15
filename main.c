@@ -179,7 +179,7 @@ static char *split_path(const char *path, char **basename, char **dirname)
 
 static omfs_inode_t *omfs_lookup(const char *path)
 {
-    char *tmp, *p;
+    char *tmp, *p, *save_ptr;
     omfs_inode_t *inode = NULL, *tmp_inode;
 
     // starting at the root, find the inode of path
@@ -192,13 +192,13 @@ static omfs_inode_t *omfs_lookup(const char *path)
 
     inode = cache_get_inode(swap_be64(omfs_info.root->root_dir));
 
-    tmp = strtok(p, "/");
+    tmp = strtok_r(p, "/", &save_ptr);
     while (tmp && inode)
     {
         tmp_inode = omfs_find_by_name(inode, tmp);
         cache_put_inode(inode);
         inode = tmp_inode;
-        tmp = strtok(NULL, "/");
+        tmp = strtok_r(NULL, "/", &save_ptr);
     }
     free(p);
     return inode;
