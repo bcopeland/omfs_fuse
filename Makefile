@@ -1,5 +1,5 @@
-VERSION=0.0.1
-DISTNAME=fuseomfs-$(VERSION)
+VERSION=0.5.0
+DISTNAME=omfs_fuse-$(VERSION)
 DISTFILES=*.[ch] Makefile README COPYING
 
 SRCS=main.c omfs.c crc.c bitmap.c

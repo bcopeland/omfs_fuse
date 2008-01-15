@@ -1,20 +1,21 @@
-README for fuseomfs 
+README for omfs_fuse 
 Bob Copeland <me@bobcopeland.com>
 
-This is a reference implementation of the Optimized MPEG file system
-using FUSE (File System in Userspace).  This is mostly intended as an
-experimental tool for testing and correctness rather than as an optimized,
-full-fledged implementation for every day use (use my native kernel driver
-for that).
+This is a reference implementation of the Optimized MPEG File System
+using FUSE (File System in Userspace).  OMFS is a proprietary file 
+system developed by SonicBlue and used by the Rio Karma and ReplayTV.
+
+There is also a native Linux out-of-tree filesystem driver written
+by myself.  The kernel driver is currently about 60% faster than this
+FUSE implementation. Unlike the kernel driver, omfs_fuse has improved 
+handling of continuation inodes, has a better block allocation algorithm,
+supports ReplayTV filesystems with little-endian disk formats, and 
+doesn't require building and installing a kernel module.
 
 To use:
-    $ omfs -a <device-file> <mount-point>   # mount a device
-    $ fusermount -u <mount-point>           # unmount
+    $ omfs [opts] -a <device-file> <mount-point>   # mount a device
+    $ fusermount -u <mount-point>                  # unmount
 
-OMFS now automatically swaps blocks if the magic number is little-endian.
-This will enable ReplayTV 4xxx and 5xxx series devices to work without 
-special compilation.
-
-At present the FS is read-write, but don't expect it to do the write portion
-correctly yet.  You can use the "-o ro" mount option to enable read-only mode.
-
+The filesystem is by default mounted read-write, but write support is
+still somewhat experimental.  Use the "-o ro" mount option to enable 
+read-only mode.
